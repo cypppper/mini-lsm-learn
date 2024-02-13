@@ -2,6 +2,7 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use anyhow::Result;
+use nom::Err;
 
 use crate::{
     iterators::{merge_iterator::MergeIterator, StorageIterator},
@@ -25,19 +26,19 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.inner.is_valid()
     }
 
     fn key(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.key().raw_ref()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.inner.next()
     }
 }
 
@@ -51,10 +52,27 @@ pub struct FusedIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> FusedIterator<I> {
     pub fn new(iter: I) -> Self {
-        Self {
+        let mut i = Self {
             iter,
             has_errored: false,
+        };
+        i.format_init().unwrap();
+        i
+    }
+
+    fn format_init(&mut self) -> Result<()> {
+        while self.iter.is_valid() && self.iter.value().is_empty() {
+            match self.iter.next() {
+                Ok(_) => {
+                    continue;
+                }
+                Err(x) => {
+                    self.has_errored = true;
+                    return Err(x);
+                }
+            }
         }
+        Ok(())
     }
 }
 
@@ -62,18 +80,39 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
     type KeyType<'a> = I::KeyType<'a> where Self: 'a;
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        if self.has_errored {
+            false
+        } else {
+            self.iter.is_valid()
+        }
     }
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        self.iter.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.iter.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        // println!("key {:?}, value {:?}", self.key(), self.value());
+        // while self.is_valid() && self.value().is_empty() {
+        //   self.next_inner()?;
+        //   println!("loop key {:?}, value {:?}", self.key(), self.value());
+        // }
+        if self.has_errored {
+            return Err(anyhow::Error::msg("has errored!"));
+        }
+        if !self.iter.is_valid() {
+            return Ok(());
+        }
+        match self.iter.next() {
+            Ok(_) => self.format_init(),
+            Err(x) => {
+                self.has_errored = true;
+                Err(x)
+            }
+        }
     }
 }

@@ -81,6 +81,7 @@ impl StorageIterator for MockIterator {
                 panic!("invalid access after next returns an error!");
             }
         }
+        println!("check valid: idx:{}, len:{}", self.index, self.data.len());
         self.index < self.data.len()
     }
 }

@@ -1,12 +1,16 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::cmp::{self};
+use std::cmp::{self, Ordering};
+use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
+use std::iter::Enumerate;
+use std::mem::swap;
+use std::ops::{Deref, DerefMut};
 
 use anyhow::Result;
 
-use crate::key::KeySlice;
+use crate::key::{Key, KeySlice};
 
 use super::StorageIterator;
 
@@ -47,7 +51,75 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        println!("create start");
+        if iters.is_empty() {
+            return Self {
+                iters: BinaryHeap::new(),
+                current: None,
+            };
+        }
+        let mut heap_iter: BinaryHeap<HeapWrapper<I>> = BinaryHeap::new();
+        for (i, single_st_iter) in iters.into_iter().enumerate() {
+            if !single_st_iter.is_valid() {
+                continue;
+            }
+            heap_iter.push(HeapWrapper(i, single_st_iter));
+        }
+        println!("create end!");
+        Self {
+            current: heap_iter.pop(),
+            iters: heap_iter,
+        }
+    }
+
+    fn next_inner(&mut self) -> Result<()> {
+        println!("enter MergeIter.next");
+        let cur_key_before_next = self.current.as_ref().unwrap();
+        while let Some(mut inner_iter) = self.iters.peek_mut() {
+            // println!(
+            //     "heap iter key: {}, cur_key: {}",
+            //     inner_iter.1.key(),
+            //     cur_key_before_next.1.key().into()
+            // );
+
+            if inner_iter.1.key().cmp(&cur_key_before_next.1.key()) == Ordering::Equal {
+                // println!("jump key: {:?}", inner_iter.1.key());
+                inner_iter.1.next()?;
+
+                if !inner_iter.1.is_valid() {
+                    PeekMut::pop(inner_iter);
+                    continue;
+                }
+            } else {
+                break;
+            }
+        }
+
+        self.current.as_mut().unwrap().1.next()?;
+        if self.iters.is_empty() {
+            return Ok(());
+        }
+        if !self.current.as_mut().unwrap().1.is_valid() {
+            self.current = self.iters.pop();
+            return Ok(());
+        }
+        let cur_key = self.current.as_ref().unwrap();
+        let heap_key = self.iters.peek().unwrap();
+        match cur_key.cmp(&heap_key) {
+            Ordering::Greater => {
+                return Ok(());
+            }
+            Ordering::Less => {
+                swap(
+                    self.iters.peek_mut().unwrap().deref_mut(),
+                    self.current.as_mut().unwrap(),
+                );
+                return Ok(());
+            }
+            _ => {
+                panic!("should not enter this!");
+            }
+        }
     }
 }
 
@@ -57,18 +129,23 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        if let Some(x) = self.current.as_ref() {
+            x.1.is_valid()
+        } else {
+            false
+        }
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.next_inner()?;
+        Ok(())
     }
 }
