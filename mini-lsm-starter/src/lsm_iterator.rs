@@ -96,11 +96,6 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
     }
 
     fn next(&mut self) -> Result<()> {
-        // println!("key {:?}, value {:?}", self.key(), self.value());
-        // while self.is_valid() && self.value().is_empty() {
-        //   self.next_inner()?;
-        //   println!("loop key {:?}, value {:?}", self.key(), self.value());
-        // }
         if self.has_errored {
             return Err(anyhow::Error::msg("has errored!"));
         }

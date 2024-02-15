@@ -79,7 +79,6 @@ impl BlockIterator {
                 idx: 0,
             };
         }
-        assert!(low < block.offsets.len());
         let (_key, _v_off, _v_len) = Self::seeki(&block, low);
 
         Self {
@@ -104,7 +103,7 @@ impl BlockIterator {
     /// Returns true if the iterator is valid.
     /// Note: You may want to make use of `key`
     pub fn is_valid(&self) -> bool {
-        self.key.is_empty()
+        !self.key.is_empty()
     }
 
     /// Seeks to the first key in the block.
