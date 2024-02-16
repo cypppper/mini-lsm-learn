@@ -1,9 +1,10 @@
 use std::collections::BinaryHeap;
 use std::ops::DerefMut;
 use std::io::BufRead;
-use bytes::{Buf, BufMut};
+use bytes::{Bytes, Buf, BufMut};
 fn main() {
+  let a  = String::from("aaacccbbb");
+  let b  = Bytes::from("aaaa bbb");
+  let c = Bytes::from(a);
 
-
-    println!("{:?}", format!("key_{:03}", 234 * 5));
 }

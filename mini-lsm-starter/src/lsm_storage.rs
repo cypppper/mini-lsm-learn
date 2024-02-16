@@ -16,11 +16,14 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::iterators::StorageIterator;
+use crate::key::Key;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -279,25 +282,43 @@ impl LsmStorageInner {
     }
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
+    /// from mut_mem to imm_mems to sst
+    /// sstable: get
+    ///     None: not exist
+    ///     bytes.len == 0: deleted
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        let guard = self.state.read();
-        match guard.memtable.get(_key) {
-            Some(x) if x.len() == 0 => {
-                return Ok(None);
-            }
-            Some(x) => {
-                return Ok(Some(x));
-            }
-            None => {
-                for x in &guard.imm_memtables {
-                    match x.get(_key) {
-                        Some(y) if y.len() == 0 => {
-                            return Ok(None);
+        let snapshot = {
+            let guard = self.state.read();
+            match guard.memtable.get(_key) {
+                Some(x) if x.len() == 0 => {
+                    return Ok(None);
+                }
+                Some(x) => {
+                    return Ok(Some(x));
+                }
+                None => {
+                    for x in &guard.imm_memtables {
+                        match x.get(_key) {
+                            Some(y) if y.len() == 0 => {
+                                return Ok(None);
+                            }
+                            Some(y) => {
+                                return Ok(Some(y));
+                            }
+                            None => {}
                         }
-                        Some(y) => {
-                            return Ok(Some(y));
-                        }
-                        None => {}
+                    }
+                }
+            }
+            guard.clone()
+        };
+        for i in &snapshot.l0_sstables {
+            if let Some(table) = snapshot.sstables.get(i) {
+                match table.get(_key)? {
+                    Some(x) if x.len() > 0 => return Ok(Some(x)),
+                    Some(x) if x.len() == 0 => return Ok(None),
+                    _ => {
+                        continue;
                     }
                 }
             }
@@ -387,18 +408,47 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let rd_state_guard = self.state.read();
+        let (snapshot, mem_iter) = {
+            let guard = self.state.read();
 
-        let mut iters = vec![];
-        let first_ite = Box::new(rd_state_guard.memtable.scan(_lower, _upper));
-        for table in rd_state_guard.imm_memtables.iter().rev() {
-            iters.insert(0, Box::new(table.scan(_lower, _upper)));
+            let mut iters = vec![];
+            let first_ite = Box::new(guard.memtable.scan(_lower, _upper));
+            for table in guard.imm_memtables.iter().rev() {
+                iters.insert(0, Box::new(table.scan(_lower, _upper)));
+            }
+            iters.insert(0, first_ite);
+
+            (Arc::clone(&guard), MergeIterator::create(iters))
+        };
+
+        let mut ss_iters = vec![];
+        for idx in &snapshot.l0_sstables {
+            if let Some(table) = snapshot.sstables.get(&idx) {
+                let iter = match _lower {
+                    Bound::Included(x) => SsTableIterator::create_and_seek_to_key(
+                        Arc::clone(table),
+                        Key::from_slice(x),
+                    )?,
+                    Bound::Excluded(x) => {
+                        let mut ite = SsTableIterator::create_and_seek_to_key(
+                            Arc::clone(table),
+                            Key::from_slice(x),
+                        )?;
+                        if ite.key().raw_ref() == x {
+                            ite.next()?;
+                        }
+                        ite
+                    }
+                    _ => SsTableIterator::create_and_seek_to_first(Arc::clone(table))?,
+                };
+                ss_iters.push(Box::new(iter));
+            }
         }
-        iters.insert(0, first_ite);
-        if let Ok(it) = LsmIterator::new(MergeIterator::create(iters)) {
-            Ok(FusedIterator::new(it))
-        } else {
-            Err(anyhow::Error::msg("create scan iterator failed"))
-        }
+        let ss_iter = MergeIterator::create(ss_iters);
+        let two_merge_iter = TwoMergeIterator::create(mem_iter, ss_iter)?;
+        Ok(FusedIterator::new(LsmIterator::new(
+            two_merge_iter,
+            _upper,
+        )?))
     }
 }

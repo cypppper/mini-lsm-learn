@@ -18,8 +18,9 @@ use bytes::BufMut;
 use bytes::{Buf, Bytes};
 pub use iterator::SsTableIterator;
 
-use crate::block::Block;
+use crate::block::{Block, BlockIterator};
 use crate::key;
+use crate::key::Key;
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
 use crate::mem_table;
@@ -190,6 +191,18 @@ impl SsTable {
             last_key,
             bloom: None,
             max_ts: 0,
+        }
+    }
+
+    pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>, anyhow::Error> {
+        // None: not exist | bytes.len == 0: deleted
+        let key = Key::from_slice(_key);
+        let blk = self.read_block(self.find_block_idx(key))?;
+        let ite = BlockIterator::create_and_seek_to_key(blk, key);
+        if ite.key().into_inner() == _key {
+            Ok(Some(Bytes::copy_from_slice(ite.value())))
+        } else {
+            Ok(None)
         }
     }
 
