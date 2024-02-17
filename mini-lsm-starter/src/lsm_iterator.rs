@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use anyhow::Result;
 use bytes::Bytes;
 use nom::Err;
@@ -33,10 +30,7 @@ pub struct LsmIterator {
 impl LsmIterator {
     pub(crate) fn new(iter: LsmIteratorInner, upper: Bound<&[u8]>) -> Result<Self> {
         let (upper, is_upper_included) = match upper {
-            Bound::Included(x) => (
-                Some(KeyBytes::from_bytes(Bytes::copy_from_slice(x))),
-                1 as u8,
-            ),
+            Bound::Included(x) => (Some(KeyBytes::from_bytes(Bytes::copy_from_slice(x))), 1_u8),
             Bound::Excluded(x) => (Some(KeyBytes::from_bytes(Bytes::copy_from_slice(x))), 0),
             _ => (None, 0),
         };
@@ -73,6 +67,10 @@ impl StorageIterator for LsmIterator {
 
     fn next(&mut self) -> Result<()> {
         self.inner.next()
+    }
+
+    fn num_active_iterators(&self) -> usize {
+        self.inner.num_active_iterators()
     }
 }
 
@@ -143,5 +141,9 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
                 Err(x)
             }
         }
+    }
+
+    fn num_active_iterators(&self) -> usize {
+        self.iter.num_active_iterators()
     }
 }

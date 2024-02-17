@@ -145,6 +145,11 @@ impl LsmStorageInner {
     }
 
     fn trigger_flush(&self) -> Result<()> {
+        let read_gd = self.state.read();
+        if read_gd.imm_memtables.len() >= self.options.num_memtable_limit {
+            std::mem::drop(read_gd);
+            self.force_flush_next_imm_memtable()?;
+        }
         Ok(())
     }
 

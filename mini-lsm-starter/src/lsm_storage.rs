@@ -1,11 +1,13 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
 
 use std::collections::HashMap;
-use std::ops::Bound;
+use std::ops::{Bound, Deref};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
+use anyhow::Context;
 use anyhow::Result;
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
@@ -18,12 +20,12 @@ use crate::compact::{
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
-use crate::key::Key;
+use crate::key::*;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -158,7 +160,18 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        self.flush_notifier.send(())?;
+        let flush_th = self.flush_thread.lock();
+        while !flush_th.as_ref().unwrap().is_finished() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.compaction_notifier.send(())?;
+        let compact_th = self.compaction_thread.lock();
+        while !compact_th.as_ref().unwrap().is_finished() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        println!("two thread finish!");
+        Ok(())
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
@@ -241,6 +254,9 @@ impl LsmStorageInner {
     /// not exist.
     pub(crate) fn open(path: impl AsRef<Path>, options: LsmStorageOptions) -> Result<Self> {
         let path = path.as_ref();
+        if !path.exists() {
+            std::fs::create_dir_all(path).context("failed to create DB dir")?;
+        }
         let state = LsmStorageState::create(&options);
 
         let compaction_controller = match &options.compaction_options {
@@ -290,7 +306,7 @@ impl LsmStorageInner {
         let snapshot = {
             let guard = self.state.read();
             match guard.memtable.get(_key) {
-                Some(x) if x.len() == 0 => {
+                Some(x) if x.is_empty() => {
                     return Ok(None);
                 }
                 Some(x) => {
@@ -299,7 +315,7 @@ impl LsmStorageInner {
                 None => {
                     for x in &guard.imm_memtables {
                         match x.get(_key) {
-                            Some(y) if y.len() == 0 => {
+                            Some(y) if y.is_empty() => {
                                 return Ok(None);
                             }
                             Some(y) => {
@@ -314,9 +330,12 @@ impl LsmStorageInner {
         };
         for i in &snapshot.l0_sstables {
             if let Some(table) = snapshot.sstables.get(i) {
+                if !Self::key_within(_key, table.first_key(), table.last_key()) {
+                    continue;
+                }
                 match table.get(_key)? {
-                    Some(x) if x.len() > 0 => return Ok(Some(x)),
-                    Some(x) if x.len() == 0 => return Ok(None),
+                    Some(x) if !x.is_empty() => return Ok(Some(x)),
+                    Some(x) if x.is_empty() => return Ok(None),
                     _ => {
                         continue;
                     }
@@ -375,7 +394,6 @@ impl LsmStorageInner {
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
         let next_sst_id = self.next_sst_id();
         let memtable = Arc::new(MemTable::create(next_sst_id));
-
         {
             // write lock state
             let mut wr_state = self.state.write();
@@ -394,7 +412,30 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-        unimplemented!()
+        let _guard = self.state_lock.lock();
+        let flush_memtable = {
+            let read_gd = self.state.read();
+            (*read_gd.imm_memtables.last().unwrap()).clone()
+        };
+        let mut builder = SsTableBuilder::new(self.options.target_sst_size);
+        flush_memtable.flush(&mut builder)?;
+        {
+            let mut write_gd = self.state.write();
+            let mut snapshot = write_gd.as_ref().clone();
+            snapshot.imm_memtables.pop();
+            let sst_id = self.next_sst_id();
+            let sst = builder
+                .build(
+                    sst_id,
+                    Some(self.block_cache.clone()),
+                    self.path_of_sst(sst_id),
+                )
+                .unwrap();
+            snapshot.l0_sstables.insert(0, sst.sst_id());
+            snapshot.sstables.insert(sst.sst_id(), Arc::new(sst));
+            *write_gd = Arc::new(snapshot);
+        }
+        Ok(())
     }
 
     pub fn new_txn(&self) -> Result<()> {
@@ -423,7 +464,10 @@ impl LsmStorageInner {
 
         let mut ss_iters = vec![];
         for idx in &snapshot.l0_sstables {
-            if let Some(table) = snapshot.sstables.get(&idx) {
+            if let Some(table) = snapshot.sstables.get(idx) {
+                if !Self::range_overlap(table.first_key(), table.last_key(), _lower, _upper) {
+                    continue;
+                }
                 let iter = match _lower {
                     Bound::Included(x) => SsTableIterator::create_and_seek_to_key(
                         Arc::clone(table),
@@ -450,5 +494,46 @@ impl LsmStorageInner {
             two_merge_iter,
             _upper,
         )?))
+    }
+
+    fn range_overlap(
+        first_key: &KeyBytes,
+        last_key: &KeyBytes,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+    ) -> bool {
+        // last key < lower: bye
+        // first key > upper: bye
+        match lower {
+            Bound::Included(x) => {
+                if last_key.raw_ref() < x {
+                    return false;
+                }
+            }
+            Bound::Excluded(x) => {
+                if last_key.raw_ref() <= x {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        match upper {
+            Bound::Included(x) => {
+                if first_key.raw_ref() > x {
+                    return false;
+                }
+            }
+            Bound::Excluded(x) => {
+                if first_key.raw_ref() >= x {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn key_within(key: &[u8], first_key: &KeyBytes, last_key: &KeyBytes) -> bool {
+        key >= first_key.raw_ref() && key <= last_key.raw_ref()
     }
 }

@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::{cmp::Ordering, sync::Arc};
 
 use crate::key::{KeySlice, KeyVec};
@@ -49,7 +46,7 @@ impl BlockIterator {
 
     /// Creates a block iterator and seek to the first key that >= `key`.
     pub fn create_and_seek_to_key(block: Arc<Block>, key: KeySlice) -> Self {
-        let (mut low, mut high) = (0 as usize, block.offsets.len());
+        let (mut low, mut high) = (0_usize, block.offsets.len());
         let mut mid;
         let mut mid_key;
 
@@ -132,7 +129,7 @@ impl BlockIterator {
     /// Note: You should assume the key-value pairs in the block are sorted when being added by
     /// callers.
     pub fn seek_to_key(&mut self, key: KeySlice) {
-        let (mut low, mut high) = (0 as usize, self.block.offsets.len());
+        let (mut low, mut high) = (0_usize, self.block.offsets.len());
         let mut mid;
         let mut mid_key;
 
@@ -174,7 +171,7 @@ impl BlockIterator {
         &rt[..key_len]
     }
 
-    fn seekik<'a>(blk: &'a Arc<Block>, idx: usize) -> &'a [u8] {
+    fn seekik(blk: &Arc<Block>, idx: usize) -> &[u8] {
         let off = blk.offsets[idx] as usize;
         let off = blk.offsets[idx] as usize;
         let (lf, mut rt) = blk.data.split_at(off);
@@ -182,7 +179,7 @@ impl BlockIterator {
         &rt[..key_len]
     }
 
-    fn seeki<'a>(blk: &'a Arc<Block>, idx: usize) -> (&'a [u8], usize, usize) {
+    fn seeki(blk: &Arc<Block>, idx: usize) -> (&[u8], usize, usize) {
         let off = blk.offsets[idx] as usize;
         Self::seekikv(&blk.data[..], off)
     }

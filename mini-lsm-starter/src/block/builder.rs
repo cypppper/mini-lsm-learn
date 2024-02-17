@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::default;
 
 use bytes::{Buf, BufMut, Bytes};
@@ -70,7 +67,7 @@ impl BlockBuilder {
             return None;
         }
         let off = self.offsets[self.offsets.len() - 1] as usize;
-        let (_, mut rt) = (&self.data[..]).split_at(off);
+        let (_, mut rt) = self.data[..].split_at(off);
         let key_len = rt.get_u16() as usize;
         let mut v: KeyVec = KeyVec::new();
         v.append(&rt[..key_len]);

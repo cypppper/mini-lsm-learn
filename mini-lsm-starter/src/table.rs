@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 pub(crate) mod bloom;
 mod builder;
 mod iterator;
@@ -75,7 +72,7 @@ impl BlockMeta {
         let mut keyf_len: u16;
         let mut keyl_len: u16;
         let mut vec: Vec<BlockMeta> = Vec::new();
-        for i in 0..meta_len {
+        for _ in 0..meta_len {
             _off = rt.get_u32();
             keyf_len = rt.get_u16();
             _fk = rt.get(0..keyf_len as usize).unwrap();
@@ -223,7 +220,6 @@ impl SsTable {
 
     /// Read a block from disk, with block cache. (Day 4)
     pub fn read_block_cached(&self, block_idx: usize) -> Result<Arc<Block>> {
-        let block: Option<Arc<Block>> = None;
         if let Some(ref block_cache) = self.block_cache {
             let a = block_cache
                 .try_get_with((self.sst_id(), block_idx), || self.read_block(block_idx))
@@ -239,7 +235,7 @@ impl SsTable {
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
         let key = KeyBytes::from_bytes(Bytes::copy_from_slice(key.into_inner()));
-        let mut low = 0 as usize;
+        let mut low = 0_usize;
         let mut high = self.block_meta.len();
         let mut mid;
         let mut mid_key;

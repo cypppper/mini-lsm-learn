@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::cmp::{self, Ordering};
 use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
@@ -64,7 +61,6 @@ impl<I: StorageIterator> MergeIterator<I> {
             }
             heap_iter.push(HeapWrapper(i, single_st_iter));
         }
-        println!("create end!");
         Self {
             current: heap_iter.pop(),
             iters: heap_iter,
@@ -72,17 +68,9 @@ impl<I: StorageIterator> MergeIterator<I> {
     }
 
     fn next_inner(&mut self) -> Result<()> {
-        println!("enter MergeIter.next");
         let cur_key_before_next = self.current.as_ref().unwrap();
         while let Some(mut inner_iter) = self.iters.peek_mut() {
-            // println!(
-            //     "heap iter key: {}, cur_key: {}",
-            //     inner_iter.1.key(),
-            //     cur_key_before_next.1.key().into()
-            // );
-
             if inner_iter.1.key().cmp(&cur_key_before_next.1.key()) == Ordering::Equal {
-                // println!("jump key: {:?}", inner_iter.1.key());
                 inner_iter.1.next()?;
 
                 if !inner_iter.1.is_valid() {
@@ -104,16 +92,14 @@ impl<I: StorageIterator> MergeIterator<I> {
         }
         let cur_key = self.current.as_ref().unwrap();
         let heap_key = self.iters.peek().unwrap();
-        match cur_key.cmp(&heap_key) {
-            Ordering::Greater => {
-                return Ok(());
-            }
+        match cur_key.cmp(heap_key) {
+            Ordering::Greater => Ok(()),
             Ordering::Less => {
                 swap(
                     self.iters.peek_mut().unwrap().deref_mut(),
                     self.current.as_mut().unwrap(),
                 );
-                return Ok(());
+                Ok(())
             }
             _ => {
                 panic!("should not enter this!");
@@ -146,5 +132,13 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     fn next(&mut self) -> Result<()> {
         self.next_inner()?;
         Ok(())
+    }
+
+    fn num_active_iterators(&self) -> usize {
+        self.iters.len()
+            + match self.is_valid() {
+                true => 1,
+                _ => 0,
+            }
     }
 }

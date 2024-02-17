@@ -1,5 +1,3 @@
-#![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
-
 use std::borrow::BorrowMut;
 use std::default;
 use std::ops::Bound;
@@ -84,10 +82,11 @@ impl MemTable {
 
     /// Get a value by key.
     pub fn get(&self, _key: &[u8]) -> Option<Bytes> {
-        match self.map.get(_key) {
-            Some(x) => Some(x.value().clone()),
-            None => None,
-        }
+        self.map.get(_key).map(|x| x.value().clone())
+        // match self.map.get(_key) {
+        //     Some(x) => Some(x.value().clone()),
+        //     None => None,
+        // }
     }
 
     /// Put a key-value pair into the mem-table.
@@ -125,7 +124,10 @@ impl MemTable {
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
     pub fn flush(&self, _builder: &mut SsTableBuilder) -> Result<()> {
-        unimplemented!()
+        for entry in self.map.iter() {
+            _builder.add(KeySlice::from_slice(entry.key()), entry.value());
+        }
+        Ok(())
     }
 
     pub fn id(&self) -> usize {

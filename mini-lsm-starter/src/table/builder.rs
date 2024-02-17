@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::path::Path;
 use std::sync::Arc;
 
@@ -18,8 +15,6 @@ use crate::{
 #[derive(Default)]
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
@@ -102,7 +97,7 @@ impl SsTableBuilder {
         let fk = self.meta[0].first_key.clone();
 
         Ok(SsTable {
-            file: file,
+            file,
             block_meta: self.meta,
             block_meta_offset: meta_off,
             id,
