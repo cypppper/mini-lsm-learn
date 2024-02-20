@@ -150,23 +150,30 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        // week 1 day4 decode meta only
-        let res = file.read(file.size() - 4, 4)?;
-        let meta_off = (&res[..]).get_u32() as usize;
-        let meta_code = file
-            .read(meta_off as u64, file.size() - 4 - meta_off as u64)
-            .unwrap();
-        let meta = BlockMeta::decode_block_meta(&meta_code[..]);
+        let len = file.size();
+        let raw_bloom_offset = file.read(len - 4, 4)?;
+        let bloom_offset = (&raw_bloom_offset[..]).get_u32() as u64;
+        let raw_bloom = file.read(bloom_offset, len - 4 - bloom_offset)?;
+        let bloom_filter = Bloom::decode(&raw_bloom)?;
+
+        let res = file.read(bloom_offset - 4, 4)?;
+        let block_meta_off = (&res[..]).get_u32() as usize;
+        let block_meta_code = file.read(
+            block_meta_off as u64,
+            bloom_offset - 4 - block_meta_off as u64,
+        )?;
+
+        let meta = BlockMeta::decode_block_meta(&block_meta_code[..]);
 
         Ok(Self {
             file,
-            block_meta_offset: meta_off,
+            block_meta_offset: block_meta_off,
             id,
             block_cache,
             first_key: meta[0].first_key.clone(),
             last_key: meta[meta.len() - 1].last_key.clone(),
             block_meta: meta,
-            bloom: None,
+            bloom: Some(bloom_filter),
             max_ts: 0,
         })
     }
@@ -193,6 +200,20 @@ impl SsTable {
 
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>, anyhow::Error> {
         // None: not exist | bytes.len == 0: deleted
+        let keep_table = |_key: &[u8], filter: &Option<Bloom>| {
+            if let Some(bloom) = filter {
+                if bloom.may_contain(farmhash::fingerprint32(_key)) {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+            false
+        };
+        if !keep_table(_key, &self.bloom) {
+            return Ok(None);
+        }
+
         let key = Key::from_slice(_key);
         let blk = self.read_block(self.find_block_idx(key))?;
         let ite = BlockIterator::create_and_seek_to_key(blk, key);

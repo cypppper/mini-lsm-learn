@@ -161,16 +161,13 @@ impl Drop for MiniLsm {
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
         self.flush_notifier.send(())?;
-        let flush_th = self.flush_thread.lock();
-        while !flush_th.as_ref().unwrap().is_finished() {
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let mut flush_th = self.flush_thread.lock();
+        let flush = flush_th.take().unwrap();
+        flush.join().unwrap();
         self.compaction_notifier.send(())?;
-        let compact_th = self.compaction_thread.lock();
-        while !compact_th.as_ref().unwrap().is_finished() {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        println!("two thread finish!");
+        let mut compact_th = self.compaction_thread.lock();
+        let compact = compact_th.take().unwrap();
+        compact.join().unwrap();
         Ok(())
     }
 

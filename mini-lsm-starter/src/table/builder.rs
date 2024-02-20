@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::{BufMut, Bytes};
 
-use super::{BlockMeta, FileObject, SsTable};
+use super::{bloom::Bloom, BlockMeta, FileObject, SsTable};
 use crate::{
     block::BlockBuilder,
     key::{KeyBytes, KeySlice},
@@ -18,6 +18,7 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    key_hashes: Vec<u32>,
 }
 
 impl SsTableBuilder {
@@ -35,12 +36,12 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
-        if self.builder.add(key, value) {
-            return;
+        if !self.builder.add(key, value) {
+            // full
+            self.force_build_block();
+            assert!(self.builder.add(key, value));
         }
-        // full
-        self.force_build_block();
-        assert!(self.builder.add(key, value));
+        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
     }
 
     fn force_build_block(&mut self) {
@@ -92,6 +93,15 @@ impl SsTableBuilder {
         let meta_off: usize = self.data.len();
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
         self.data.put_u32(meta_off as u32);
+        // bloom filter
+        let bloom = Bloom::build_from_key_hashes(
+            &self.key_hashes,
+            Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01),
+        );
+        let bloom_offset = self.data.len();
+        bloom.encode(&mut self.data);
+        self.data.put_u32(bloom_offset as u32);
+
         let file = FileObject::create(path.as_ref(), self.data)?;
         let lk = self.meta[self.meta.len() - 1].last_key.clone();
         let fk = self.meta[0].first_key.clone();
@@ -104,7 +114,7 @@ impl SsTableBuilder {
             block_cache,
             first_key: fk,
             last_key: lk,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         })
     }
