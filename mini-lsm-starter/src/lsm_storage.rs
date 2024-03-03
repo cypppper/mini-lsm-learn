@@ -17,6 +17,7 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
@@ -339,7 +340,30 @@ impl LsmStorageInner {
                 }
             }
         }
-        Ok(None)
+        let l1_tables = snapshot.levels[0]
+            .1
+            .iter()
+            .map(|x| snapshot.sstables.get(x).unwrap().clone())
+            .collect::<Vec<_>>();
+        if l1_tables.is_empty() {
+            return Ok(None);
+        }
+        let value = match l1_tables.partition_point(|x| x.first_key().raw_ref() < _key) {
+            0 => l1_tables[0].get(_key)?,
+            x if x == l1_tables.len() => l1_tables[x - 1].get(_key)?,
+            x => l1_tables[x - 1].get(_key).map_or_else(
+                |_| {
+                    if l1_tables[x].first_key().raw_ref() == _key {
+                        l1_tables[x].get(_key).unwrap()
+                    } else {
+                        None
+                    }
+                },
+                |v| v,
+            ),
+        };
+
+        Ok(value)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -412,22 +436,22 @@ impl LsmStorageInner {
         let _guard = self.state_lock.lock();
         let flush_memtable = {
             let read_gd = self.state.read();
-            (*read_gd.imm_memtables.last().unwrap()).clone()
+            read_gd.imm_memtables.last().unwrap().clone()
         };
-        let mut builder = SsTableBuilder::new(self.options.target_sst_size);
+        let mut builder = SsTableBuilder::new(self.options.block_size);
         flush_memtable.flush(&mut builder)?;
+        let sst_id = flush_memtable.id();
+        let sst = builder.build(
+            sst_id,
+            Some(self.block_cache.clone()),
+            self.path_of_sst(sst_id),
+        )?;
         {
             let mut write_gd = self.state.write();
             let mut snapshot = write_gd.as_ref().clone();
             snapshot.imm_memtables.pop();
-            let sst_id = self.next_sst_id();
-            let sst = builder
-                .build(
-                    sst_id,
-                    Some(self.block_cache.clone()),
-                    self.path_of_sst(sst_id),
-                )
-                .unwrap();
+            println!("flushed {}.sst with size={}", sst_id, sst.table_size());
+
             snapshot.l0_sstables.insert(0, sst.sst_id());
             snapshot.sstables.insert(sst.sst_id(), Arc::new(sst));
             *write_gd = Arc::new(snapshot);
@@ -487,6 +511,14 @@ impl LsmStorageInner {
         }
         let ss_iter = MergeIterator::create(ss_iters);
         let two_merge_iter = TwoMergeIterator::create(mem_iter, ss_iter)?;
+        let concat_iter = SstConcatIterator::create_and_seek_to_first(
+            snapshot.levels[0]
+                .1
+                .iter()
+                .map(|x| snapshot.sstables.get(x).unwrap().clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let two_merge_iter = TwoMergeIterator::create(two_merge_iter, concat_iter)?;
         Ok(FusedIterator::new(LsmIterator::new(
             two_merge_iter,
             _upper,

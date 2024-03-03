@@ -3,18 +3,8 @@ use std::ops::DerefMut;
 use std::io::BufRead;
 use bytes::{Bytes, Buf, BufMut};
 fn main() {
-    use std::time::{Duration, Instant};
-    use crossbeam_channel::tick;
-    
-    let start = Instant::now();
-    let ticker = tick(Duration::from_millis(100));
-    let dura = Duration::from_secs(1);
-        sleep(dura);
-    for _ in 0..5 {
-        ticker.recv().unwrap();
-        let dura = Duration::from_secs(1);
-        // sleep(dura);
-        println!("elapsed: {:?}", start.elapsed());
-    }
+    let vec = vec![1,2,3,4,5];
+    let a = vec.partition_point(|&x| x>=3);
+    println!("{:?}", a);
 
 }

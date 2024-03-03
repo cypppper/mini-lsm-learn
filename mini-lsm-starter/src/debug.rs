@@ -3,6 +3,17 @@ use crate::lsm_storage::{LsmStorageInner, MiniLsm};
 impl LsmStorageInner {
     pub fn dump_structure(&self) {
         let snapshot = self.state.read();
+        if !snapshot.imm_memtables.is_empty() {
+            println!(
+                "imm ({}): {:?}",
+                snapshot.imm_memtables.len(),
+                snapshot
+                    .imm_memtables
+                    .iter()
+                    .map(|x| x.id())
+                    .collect::<Vec<_>>(),
+            );
+        }
         if !snapshot.l0_sstables.is_empty() {
             println!(
                 "L0 ({}): {:?}",

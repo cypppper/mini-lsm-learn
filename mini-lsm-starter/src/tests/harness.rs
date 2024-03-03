@@ -98,9 +98,10 @@ where
         assert_eq!(
             k,
             iter.key().for_testing_key_ref(),
-            "expected key: {:?}, actual key: {:?}",
+            "expected key: {:?}, actual key: {:?}, actual value: {:?}",
             k,
             as_bytes(iter.key().for_testing_key_ref()),
+            as_bytes(iter.value()),
         );
         assert_eq!(
             v,

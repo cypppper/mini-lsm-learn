@@ -60,6 +60,10 @@ impl SsTableBuilder {
         self.data.put(old_builder.build().encode());
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.builder.is_empty() && self.meta.is_empty()
+    }
+
     /// Get the estimated size of the SSTable.
     ///
     /// Since the data blocks contain much more data than meta blocks, just return the size of data
