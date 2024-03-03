@@ -1,5 +1,6 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::{Bound, Deref};
 use std::path::{Path, PathBuf};
@@ -511,13 +512,39 @@ impl LsmStorageInner {
         }
         let ss_iter = MergeIterator::create(ss_iters);
         let two_merge_iter = TwoMergeIterator::create(mem_iter, ss_iter)?;
-        let concat_iter = SstConcatIterator::create_and_seek_to_first(
-            snapshot.levels[0]
-                .1
-                .iter()
-                .map(|x| snapshot.sstables.get(x).unwrap().clone())
-                .collect::<Vec<_>>(),
-        )?;
+        
+        let concat_iter = match _lower {
+            Bound::Included(x) => SstConcatIterator::create_and_seek_to_key(
+                snapshot.levels[0]
+                    .1
+                    .iter()
+                    .map(|x| snapshot.sstables.get(x).unwrap().clone())
+                    .collect::<Vec<_>>(),
+                Key::from_slice(x),
+            )?,
+            Bound::Excluded(x) => {
+                let mut ite = SstConcatIterator::create_and_seek_to_key(
+                    snapshot.levels[0]
+                        .1
+                        .iter()
+                        .map(|x| snapshot.sstables.get(x).unwrap().clone())
+                        .collect::<Vec<_>>(),
+                    Key::from_slice(x),
+                )?;
+                if ite.key().raw_ref() == x {
+                    ite.next()?;
+                }
+                ite
+            }
+            _ => SstConcatIterator::create_and_seek_to_first(
+                snapshot.levels[0]
+                    .1
+                    .iter()
+                    .map(|x| snapshot.sstables.get(x).unwrap().clone())
+                    .collect::<Vec<_>>(),
+            )?,
+        };
+        
         let two_merge_iter = TwoMergeIterator::create(two_merge_iter, concat_iter)?;
         Ok(FusedIterator::new(LsmIterator::new(
             two_merge_iter,
