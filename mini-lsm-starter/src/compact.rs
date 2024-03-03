@@ -115,7 +115,10 @@ pub enum CompactionOptions {
 
 impl LsmStorageInner {
     fn compact(&self, _task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
-        let snapshot = self.state.read().clone();
+        let snapshot = {
+            let state = self.state.read();
+            state.clone()
+        };
         match _task {
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
@@ -142,12 +145,62 @@ impl LsmStorageInner {
 
                 self.build_ssts_from_iter(&mut merge_two_iter)
             }
+            CompactionTask::Simple(task) => {
+                let upper_tables = task
+                    .upper_level_sst_ids
+                    .iter()
+                    .map(|id| snapshot.sstables.get(id).unwrap().clone())
+                    .collect::<Vec<_>>();
+
+                let lower_tables = task
+                    .lower_level_sst_ids
+                    .iter()
+                    .map(|id| snapshot.sstables.get(id).unwrap().clone())
+                    .collect::<Vec<_>>();
+                if task.upper_level.is_none() {
+                    let upper_iter = MergeIterator::create(
+                        upper_tables
+                            .iter()
+                            .map(|x| {
+                                Box::new(
+                                    SsTableIterator::create_and_seek_to_first(x.clone()).unwrap(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
+                    let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
+                    self.build_ssts_from_iter(&mut merge_two_iter)
+                } else {
+                    let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_tables)?;
+                    let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
+                    println!(
+                        "[compact] upper table ids: {:?} lower table ids {:?}",
+                        task.upper_level_sst_ids, task.lower_level_sst_ids
+                    );
+                    println!(
+                        "[compact] upper table first key: {:?}",
+                        bytes::Bytes::copy_from_slice(upper_iter.key().raw_ref())
+                    );
+                    if lower_iter.is_valid() {
+                        println!(
+                            "[compact] lower table first key: {:?}",
+                            bytes::Bytes::copy_from_slice(lower_iter.key().raw_ref())
+                        );
+                    }
+                    let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
+                    self.build_ssts_from_iter(&mut merge_two_iter)
+                }
+            }
             _ => Ok(vec![]),
         }
     }
 
     pub fn force_full_compaction(&self) -> Result<()> {
-        let snapshot = self.state.read().clone();
+        let snapshot = {
+            let state = self.state.read();
+            state.clone()
+        };
         let l0_ssts = snapshot.l0_sstables.clone();
         let l1_ssts = snapshot.levels[0].1.clone();
         let full_task = CompactionTask::ForceFullCompaction {
@@ -157,8 +210,8 @@ impl LsmStorageInner {
         let new_l1_ssts = self.compact(&full_task)?;
         let mut ids = Vec::with_capacity(new_l1_ssts.len());
         {
-            let state_lock = self.state_lock.lock();
-            let mut new_state = self.state.write().as_ref().clone();
+            let _state_lock = self.state_lock.lock();
+            let mut new_state = self.state.read().as_ref().clone();
             for sst in new_l1_ssts {
                 ids.push(sst.sst_id());
                 let res = new_state.sstables.insert(sst.sst_id(), sst);
@@ -185,7 +238,47 @@ impl LsmStorageInner {
     }
 
     fn trigger_compaction(&self) -> Result<()> {
-        unimplemented!()
+        println!("trigger compaction");
+        let prev_snapshot = {
+            let state = self.state.read();
+            state.clone()
+        };
+        if let Some(task) = self
+            .compaction_controller
+            .generate_compaction_task(&prev_snapshot)
+        {
+            println!("[compact] before find a compact task");
+            self.dump_structure();
+            println!("[compact] enter gen ssds");
+            let gen_ssts = self.compact(&task)?;
+            let gen_ssts_id = gen_ssts.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
+
+            let delete_ssts =
+                {
+                    let _state_lock = self.state_lock.lock();
+                    let mut prev_snapshot2 = self.state.read().as_ref().clone();
+
+                    for sst in gen_ssts {
+                        prev_snapshot2.sstables.insert(sst.sst_id(), sst);
+                    }
+                    let (snapshot, delete_ssts) = self
+                        .compaction_controller
+                        .apply_compaction_result(&prev_snapshot2, &task, &gen_ssts_id);
+                    let mut write_gd = self.state.write();
+                    *write_gd = Arc::new(snapshot);
+                    delete_ssts
+                };
+            println!(
+                "[compact] gen sst id: {:?}\n[compact]  delete sst: {:?}",
+                gen_ssts_id, delete_ssts
+            );
+            for old_sst_id in delete_ssts {
+                std::fs::remove_file(self.path_of_sst(old_sst_id))?;
+            }
+            println!("[compact] end a compact task");
+            self.dump_structure();
+        }
+        Ok(())
     }
 
     pub(crate) fn spawn_compaction_thread(
@@ -214,11 +307,15 @@ impl LsmStorageInner {
     }
 
     fn trigger_flush(&self) -> Result<()> {
-        let read_gd = self.state.read();
-        if read_gd.imm_memtables.len() >= self.options.num_memtable_limit {
-            std::mem::drop(read_gd);
+        let res = {
+            let state = self.state.read();
+            state.imm_memtables.len() >= self.options.num_memtable_limit
+        };
+        if res {
+            println!("trigger flush");
             self.force_flush_next_imm_memtable()?;
         }
+
         Ok(())
     }
 
@@ -276,6 +373,14 @@ impl LsmStorageInner {
                 Some(self.block_cache.clone()),
                 self.path_of_sst(id),
             )?))
+        }
+        println!("[compact]  build new ssts finish");
+        for table in &res {
+            println!(
+                "[compact]    first key {:?}, last key {:?}",
+                bytes::Bytes::copy_from_slice(table.first_key().raw_ref()),
+                bytes::Bytes::copy_from_slice(table.last_key().raw_ref())
+            );
         }
         Ok(res)
     }

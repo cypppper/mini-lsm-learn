@@ -374,10 +374,14 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        let guard = self.state.read();
-        guard.memtable.put(_key, _value)?;
-        if guard.memtable.approximate_size() >= self.options.target_sst_size {
+        let size = {
+            let guard = self.state.read();
+            guard.memtable.put(_key, _value)?;
+            guard.memtable.approximate_size()
+        };
+        if  size >= self.options.target_sst_size {
             let state_lock = self.state_lock.lock();
+            let guard = self.state.read();
             if guard.memtable.approximate_size() >= self.options.target_sst_size {
                 std::mem::drop(guard);
                 self.force_freeze_memtable(&state_lock)?;
@@ -451,7 +455,13 @@ impl LsmStorageInner {
             let mut write_gd = self.state.write();
             let mut snapshot = write_gd.as_ref().clone();
             snapshot.imm_memtables.pop();
-            println!("flushed {}.sst with size={}", sst_id, sst.table_size());
+            println!(
+                "[flush] flushed {}.sst with size={},\n  first key {:?} last key {:?}",
+                sst_id,
+                sst.table_size(),
+                Bytes::copy_from_slice(sst.first_key().raw_ref()),
+                Bytes::copy_from_slice(sst.last_key().raw_ref())
+            );
 
             snapshot.l0_sstables.insert(0, sst.sst_id());
             snapshot.sstables.insert(sst.sst_id(), Arc::new(sst));
@@ -512,7 +522,7 @@ impl LsmStorageInner {
         }
         let ss_iter = MergeIterator::create(ss_iters);
         let two_merge_iter = TwoMergeIterator::create(mem_iter, ss_iter)?;
-        
+
         let concat_iter = match _lower {
             Bound::Included(x) => SstConcatIterator::create_and_seek_to_key(
                 snapshot.levels[0]
@@ -531,7 +541,7 @@ impl LsmStorageInner {
                         .collect::<Vec<_>>(),
                     Key::from_slice(x),
                 )?;
-                if ite.key().raw_ref() == x {
+                if ite.is_valid() && ite.key().raw_ref() == x {
                     ite.next()?;
                 }
                 ite
@@ -544,7 +554,7 @@ impl LsmStorageInner {
                     .collect::<Vec<_>>(),
             )?,
         };
-        
+
         let two_merge_iter = TwoMergeIterator::create(two_merge_iter, concat_iter)?;
         Ok(FusedIterator::new(LsmIterator::new(
             two_merge_iter,
