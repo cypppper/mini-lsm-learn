@@ -247,17 +247,8 @@ impl LsmStorageInner {
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut res = vec![];
         let mut sst_builder = SsTableBuilder::new(self.options.block_size);
-        println!("enter build ssts");
         while iter.is_valid() {
-            println!(
-                "key: {:?}",
-                bytes::Bytes::copy_from_slice(iter.key().raw_ref())
-            );
             while iter.is_valid() && iter.value().is_empty() {
-                println!(
-                    "   pass key: {:?}",
-                    bytes::Bytes::copy_from_slice(iter.key().raw_ref())
-                );
                 iter.next()?;
             }
             if !iter.is_valid() {
