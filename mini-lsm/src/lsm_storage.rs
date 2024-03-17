@@ -325,9 +325,11 @@ impl LsmStorageInner {
             CompactionOptions::Tiered(options) => {
                 CompactionController::Tiered(TieredCompactionController::new(options.clone()))
             }
-            CompactionOptions::Simple(options) => CompactionController::Simple(
-                SimpleLeveledCompactionController::new(options.clone()),
-            ),
+            CompactionOptions::Simple(options) => {
+                println!("simple init!!!!!!!!!!!!!");
+                CompactionController::Simple(
+                    SimpleLeveledCompactionController::new(options.clone()),)
+            }
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
 
