@@ -276,7 +276,6 @@ impl LsmStorageInner {
                 std::fs::remove_file(self.path_of_sst(old_sst_id))?;
             }
             println!("[compact] end a compact task");
-            self.dump_structure();
         }
         Ok(())
     }

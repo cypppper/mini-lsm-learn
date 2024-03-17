@@ -341,30 +341,49 @@ impl LsmStorageInner {
                 }
             }
         }
-        let l1_tables = snapshot.levels[0]
-            .1
-            .iter()
-            .map(|x| snapshot.sstables.get(x).unwrap().clone())
-            .collect::<Vec<_>>();
-        if l1_tables.is_empty() {
-            return Ok(None);
-        }
-        let value = match l1_tables.partition_point(|x| x.first_key().raw_ref() < _key) {
-            0 => l1_tables[0].get(_key)?,
-            x if x == l1_tables.len() => l1_tables[x - 1].get(_key)?,
-            x => l1_tables[x - 1].get(_key).map_or_else(
-                |_| {
-                    if l1_tables[x].first_key().raw_ref() == _key {
-                        l1_tables[x].get(_key).unwrap()
-                    } else {
-                        None
-                    }
+        for level_idx in 0..snapshot.levels.len() {
+            let tables_in_lv = snapshot.levels[level_idx]
+                .1
+                .iter()
+                .map(|x| snapshot.sstables.get(x).unwrap().clone())
+                .collect::<Vec<_>>();
+            if tables_in_lv.is_empty() {
+                continue;
+            }
+            let value = match tables_in_lv.partition_point(|x| x.first_key().raw_ref() < _key) {
+                0 => tables_in_lv[0].get(_key)?,
+                x if x == tables_in_lv.len() => tables_in_lv[x - 1].get(_key)?,
+                x => match tables_in_lv[x - 1].get(_key)? {
+                    None => tables_in_lv[x].get(_key)?,
+                    _x => _x,
                 },
-                |v| v,
-            ),
-        };
+            };
+            if value.is_some() {
+                if let Some(x) = value.as_ref() {
+                    if x.is_empty() {return Ok(None);}  //deleted 
+                }
+                return Ok(value);
+            }
+        }
+        // let l1_tables = snapshot.levels[0]
+        //         .1
+        //         .iter()
+        //         .map(|x| snapshot.sstables.get(x).unwrap().clone())
+        //         .collect::<Vec<_>>();
+        // if l1_tables.is_empty() {
+        //     return Ok(None);
+        // }
+        // let value = match l1_tables.partition_point(|x| x.first_key().raw_ref() < _key) {
+        //     0 => l1_tables[0].get(_key)?,
+        //     x if x == l1_tables.len() => l1_tables[x - 1].get(_key)?,
+        //     x => match l1_tables[x - 1].get(_key)? {
+        //         None => l1_tables[x].get(_key)?,
+        //         _x => _x,
+        //     },
+        // };
 
-        Ok(value)
+        // Ok(value)
+        Ok(None)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -379,7 +398,7 @@ impl LsmStorageInner {
             guard.memtable.put(_key, _value)?;
             guard.memtable.approximate_size()
         };
-        if  size >= self.options.target_sst_size {
+        if size >= self.options.target_sst_size {
             let state_lock = self.state_lock.lock();
             let guard = self.state.read();
             if guard.memtable.approximate_size() >= self.options.target_sst_size {
