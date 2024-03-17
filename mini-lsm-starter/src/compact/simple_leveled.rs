@@ -47,7 +47,7 @@ impl SimpleLeveledCompactionController {
                 continue;
             }
             let ratio = lv_sizes[lv + 1] as f64 / lv_sizes[lv] as f64;
-            if ratio < self.options.size_ratio_percent as f64 / 100 as f64 {
+            if ratio < self.options.size_ratio_percent as f64 / 100_f64 {
                 println!("[gen task] lower level: {:?}", lv + 1);
                 return Some(SimpleLeveledCompactionTask {
                     upper_level: if lv == 0 { None } else { Some(lv) },

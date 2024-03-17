@@ -360,7 +360,9 @@ impl LsmStorageInner {
             };
             if value.is_some() {
                 if let Some(x) = value.as_ref() {
-                    if x.is_empty() {return Ok(None);}  //deleted 
+                    if x.is_empty() {
+                        return Ok(None);
+                    } //deleted
                 }
                 return Ok(value);
             }
@@ -542,36 +544,29 @@ impl LsmStorageInner {
         let ss_iter = MergeIterator::create(ss_iters);
         let two_merge_iter = TwoMergeIterator::create(mem_iter, ss_iter)?;
 
-        let concat_iter = match _lower {
-            Bound::Included(x) => SstConcatIterator::create_and_seek_to_key(
-                snapshot.levels[0]
-                    .1
+        let mut concat_ssts_vec: Vec<Arc<SsTable>> = vec![];
+        for (_, id_vecs) in &snapshot.levels {
+            concat_ssts_vec.extend(
+                id_vecs
                     .iter()
                     .map(|x| snapshot.sstables.get(x).unwrap().clone())
                     .collect::<Vec<_>>(),
-                Key::from_slice(x),
-            )?,
+            );
+        }
+
+        let concat_iter = match _lower {
+            Bound::Included(x) => {
+                SstConcatIterator::create_and_seek_to_key(concat_ssts_vec, Key::from_slice(x))?
+            }
             Bound::Excluded(x) => {
-                let mut ite = SstConcatIterator::create_and_seek_to_key(
-                    snapshot.levels[0]
-                        .1
-                        .iter()
-                        .map(|x| snapshot.sstables.get(x).unwrap().clone())
-                        .collect::<Vec<_>>(),
-                    Key::from_slice(x),
-                )?;
+                let mut ite =
+                    SstConcatIterator::create_and_seek_to_key(concat_ssts_vec, Key::from_slice(x))?;
                 if ite.is_valid() && ite.key().raw_ref() == x {
                     ite.next()?;
                 }
                 ite
             }
-            _ => SstConcatIterator::create_and_seek_to_first(
-                snapshot.levels[0]
-                    .1
-                    .iter()
-                    .map(|x| snapshot.sstables.get(x).unwrap().clone())
-                    .collect::<Vec<_>>(),
-            )?,
+            _ => SstConcatIterator::create_and_seek_to_first(concat_ssts_vec)?,
         };
 
         let two_merge_iter = TwoMergeIterator::create(two_merge_iter, concat_iter)?;

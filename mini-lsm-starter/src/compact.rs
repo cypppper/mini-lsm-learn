@@ -222,12 +222,15 @@ impl LsmStorageInner {
                 assert!(res.is_some());
             }
             let mut l0_hash_map = l0_ssts.iter().copied().collect::<HashSet<_>>();
-            new_state.l0_sstables = new_state
-                .l0_sstables
-                .iter()
-                .filter(|x| !l0_hash_map.remove(x))
-                .copied()
-                .collect();
+            // new_state.l0_sstables = new_state
+            //     .l0_sstables
+            //     .iter()
+            //     .filter(|x| !l0_hash_map.remove(x))
+            //     .copied()
+            //     .collect();
+            
+            /* below is better */
+            new_state.l0_sstables.retain(|x| !l0_hash_map.remove(x));
             new_state.levels[0].1 = ids;
             *self.state.write() = Arc::new(new_state);
         }
@@ -238,7 +241,6 @@ impl LsmStorageInner {
     }
 
     fn trigger_compaction(&self) -> Result<()> {
-        println!("trigger compaction");
         let prev_snapshot = {
             let state = self.state.read();
             state.clone()
