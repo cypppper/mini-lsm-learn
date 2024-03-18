@@ -143,7 +143,7 @@ impl LsmStorageInner {
                 let l1_iter = SstConcatIterator::create_and_seek_to_first(l1_tables)?;
                 let mut merge_two_iter = TwoMergeIterator::create(l0_merge_iter, l1_iter)?;
 
-                self.build_ssts_from_iter(&mut merge_two_iter)
+                self.build_ssts_from_iter(&mut merge_two_iter, _task.compact_to_bottom_level())
             }
             CompactionTask::Simple(task) => {
                 let upper_tables = task
@@ -170,7 +170,7 @@ impl LsmStorageInner {
                     );
                     let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
                     let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_ssts_from_iter(&mut merge_two_iter)
+                    self.build_ssts_from_iter(&mut merge_two_iter, _task.compact_to_bottom_level())
                 } else {
                     let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_tables)?;
                     let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
@@ -189,7 +189,7 @@ impl LsmStorageInner {
                         );
                     }
                     let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_ssts_from_iter(&mut merge_two_iter)
+                    self.build_ssts_from_iter(&mut merge_two_iter, _task.compact_to_bottom_level())
                 }
             }
             _ => Ok(vec![]),
@@ -342,11 +342,12 @@ impl LsmStorageInner {
     fn build_ssts_from_iter(
         &self,
         iter: &mut impl for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
+        is_bottom: bool,
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut res = vec![];
         let mut sst_builder = SsTableBuilder::new(self.options.block_size);
         while iter.is_valid() {
-            while iter.is_valid() && iter.value().is_empty() {
+            while is_bottom && iter.is_valid() && iter.value().is_empty() {
                 iter.next()?;
             }
             if !iter.is_valid() {
