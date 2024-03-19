@@ -120,6 +120,28 @@ impl LsmStorageInner {
             state.clone()
         };
         match _task {
+            CompactionTask::Tiered(task) => {
+                // let (runs, last) = task.tiers.split_at(task.tiers.len() - 1);
+                let runs = &task.tiers;
+                let merge_ssts = runs.iter().map(|(_, ids)| {
+                    let concat_inside_ssts = ids.iter()
+                        .map(|x| {
+                            snapshot.sstables.get(x).unwrap().clone()
+                        }).collect::<Vec<_>>();
+                    
+                    Box::new(
+                        SstConcatIterator::create_and_seek_to_first(concat_inside_ssts).unwrap()
+                    )
+                })
+                .collect::<Vec<_>>();
+                // let concat_ssts = last[0].1.iter().map(|id| {snapshot.sstables.get(id).unwrap().clone()})
+                //     .collect::<Vec<_>>();
+                let mut merge_ite = MergeIterator::create(merge_ssts);
+                // let concat_ite = SstConcatIterator::create_and_seek_to_first(concat_ssts)?;
+                // let mut two_merge_ite = TwoMergeIterator::create(merge_ite, concat_ite)?;
+                
+                self.build_ssts_from_iter(&mut merge_ite, _task.compact_to_bottom_level())
+            }
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
                 l1_sstables,
