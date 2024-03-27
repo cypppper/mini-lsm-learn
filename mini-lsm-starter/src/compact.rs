@@ -120,6 +120,30 @@ impl LsmStorageInner {
             state.clone()
         };
         match _task {
+            CompactionTask::Leveled(task) => {
+                let concat_ssts_lower = task.lower_level_sst_ids.iter().map(|id| {
+                    snapshot.sstables.get(id).unwrap().clone()
+                }).collect::<Vec<_>>();
+                let lower_ite = SstConcatIterator::create_and_seek_to_first(concat_ssts_lower)?;
+                if let Some(_) = task.upper_level {
+                    let concat_ssts_upper = task.upper_level_sst_ids.iter().map(|id| {
+                        snapshot.sstables.get(id).unwrap().clone()
+                    }).collect::<Vec<_>>();
+                    let upper_ite = SstConcatIterator::create_and_seek_to_first(concat_ssts_upper)?;
+                    let mut ite = TwoMergeIterator::create(upper_ite, lower_ite)?;
+                    self.build_ssts_from_iter(&mut ite, task.is_lower_level_bottom_level)
+                } else {
+                    let merge_ites = task.upper_level_sst_ids.iter().map(| id| {
+                        Box::new(
+                            SsTableIterator::create_and_seek_to_first(snapshot.sstables.get(id).unwrap().clone()).unwrap()
+                        )
+                    }).collect::<Vec<_>>();
+                    let upper_ite = MergeIterator::create(merge_ites);
+                    
+                    let mut ite = TwoMergeIterator::create(upper_ite, lower_ite)?;
+                    self.build_ssts_from_iter(&mut ite, task.is_lower_level_bottom_level)
+                }
+            }
             CompactionTask::Tiered(task) => {
                 // let (runs, last) = task.tiers.split_at(task.tiers.len() - 1);
                 let runs = &task.tiers;
