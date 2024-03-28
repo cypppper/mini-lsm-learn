@@ -52,7 +52,7 @@ impl Manifest {
             rcds.push(a);
         }
 
-        let file = Arc::new(Mutex::new(File::create(path)?));
+        let file = Arc::new(Mutex::new(File::options().append(true).open(path)?));
         file.lock().sync_all()?;
         Ok((Self { file }, rcds))
     }

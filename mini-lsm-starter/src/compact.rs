@@ -322,12 +322,10 @@ impl LsmStorageInner {
             // println!("[compact] enter gen ssds");
             let gen_ssts = self.compact(&task)?;
             let gen_ssts_id = gen_ssts.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
-
             let delete_ssts =
                 {
                     let _state_lock = self.state_lock.lock();
                     let mut prev_snapshot2 = self.state.read().as_ref().clone();
-
                     for sst in gen_ssts {
                         prev_snapshot2.sstables.insert(sst.sst_id(), sst);
                     }

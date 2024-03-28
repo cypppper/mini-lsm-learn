@@ -281,13 +281,12 @@ impl LsmStorageInner {
             ),
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
-
+        let mut next_sst_id = 1;
         let manif = if !Manifest::get_path(path).exists() {
             let manif = Manifest::create(path)?;
             manif.add_record_when_init(ManifestRecord::NewMemtable(0))?;
             Some(manif)
         } else {
-            let mut next_sst_id = 1;
             let (manif, records) = Manifest::recover(path)?;
             let mut mem = 0;
             let mut imm = vec![];
@@ -299,7 +298,7 @@ impl LsmStorageInner {
                         }
                         imm.insert(0, mem);
                         mem = id;
-                        next_sst_id = next_sst_id.max(id);
+                        next_sst_id = next_sst_id.max(id + 1);
                     }
                     ManifestRecord::Flush(id) => {
                         assert!(!imm.is_empty());
@@ -338,7 +337,7 @@ impl LsmStorageInner {
             if !state.l0_sstables.is_empty() {
                 valid_ssts.extend_from_slice(&state.l0_sstables);
             }
-            for (level, files) in &state.levels {
+            for (_, files) in &state.levels {
                 valid_ssts.extend_from_slice(files);
             }
             for id in valid_ssts {
@@ -353,13 +352,13 @@ impl LsmStorageInner {
 
             Some(manif)
         };
-
+        println!("next sst id{:?}", next_sst_id);
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
             path: path.to_path_buf(),
             block_cache: Arc::new(BlockCache::new(1024)),
-            next_sst_id: AtomicUsize::new(1),
+            next_sst_id: AtomicUsize::new(next_sst_id),
             compaction_controller,
             manifest: manif, // to change for MANIFEST
             options: options.into(),
