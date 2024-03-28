@@ -25,8 +25,10 @@ use crate::iterators::StorageIterator;
 use crate::key::*;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
+use crate::manifest::ManifestRecord;
 use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
+use crate::table::FileObject;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
@@ -162,6 +164,8 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
+        println!("enter close");
+        // end flush and end compaction
         self.flush_notifier.send(())?;
         let mut flush_th = self.flush_thread.lock();
         let flush = flush_th.take().unwrap();
@@ -170,6 +174,12 @@ impl MiniLsm {
         let mut compact_th = self.compaction_thread.lock();
         let compact = compact_th.take().unwrap();
         compact.join().unwrap();
+
+        // flush memtable/imm ~
+        if !self.inner.options.enable_wal {
+            self.inner.flush_all_memtable()?;
+        }
+
         Ok(())
     }
 
@@ -253,10 +263,11 @@ impl LsmStorageInner {
     /// not exist.
     pub(crate) fn open(path: impl AsRef<Path>, options: LsmStorageOptions) -> Result<Self> {
         let path = path.as_ref();
+        // println!("[create lsm]{:?}", path.to_path_buf());
         if !path.exists() {
             std::fs::create_dir_all(path).context("failed to create DB dir")?;
         }
-        let state = LsmStorageState::create(&options);
+        let mut state = LsmStorageState::create(&options);
 
         let compaction_controller = match &options.compaction_options {
             CompactionOptions::Leveled(options) => {
@@ -271,6 +282,78 @@ impl LsmStorageInner {
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
 
+        let manif = if !Manifest::get_path(path).exists() {
+            let manif = Manifest::create(path)?;
+            manif.add_record_when_init(ManifestRecord::NewMemtable(0))?;
+            Some(manif)
+        } else {
+            let mut next_sst_id = 1;
+            let (manif, records) = Manifest::recover(path)?;
+            let mut mem = 0;
+            let mut imm = vec![];
+            for rec in records {
+                match rec {
+                    ManifestRecord::NewMemtable(id) => {
+                        if id == 0 {
+                            continue;
+                        }
+                        imm.insert(0, mem);
+                        mem = id;
+                        next_sst_id = next_sst_id.max(id);
+                    }
+                    ManifestRecord::Flush(id) => {
+                        assert!(!imm.is_empty());
+                        assert!(
+                            imm.last().is_some()
+                                && (imm.last().unwrap() == &id || imm.last().unwrap() == &0)
+                        );
+                        imm.remove(imm.len() - 1);
+                        if compaction_controller.flush_to_l0() {
+                            state.l0_sstables.insert(0, id);
+                        } else {
+                            state.levels.insert(0, (id, vec![id]));
+                        }
+                    }
+                    ManifestRecord::Compaction(task, out) => {
+                        let (new_state, _) =
+                            compaction_controller.apply_compaction_result(&state, &task, &out);
+                        next_sst_id =
+                            next_sst_id.max(out.iter().copied().max().unwrap_or_default() + 1);
+                        state = new_state;
+                    }
+                }
+
+                // dump structure
+                // if !imm.is_empty() {
+                //     println!("imm ({}): {:?}", imm.len(), imm,);
+                // }
+                // if !state.l0_sstables.is_empty() {
+                //     println!("L0 ({}): {:?}", state.l0_sstables.len(), state.l0_sstables,);
+                // }
+                // for (level, files) in &state.levels {
+                //     println!("L{level} ({}): {:?}", files.len(), files);
+                // }
+            }
+            let mut valid_ssts = vec![];
+            if !state.l0_sstables.is_empty() {
+                valid_ssts.extend_from_slice(&state.l0_sstables);
+            }
+            for (level, files) in &state.levels {
+                valid_ssts.extend_from_slice(files);
+            }
+            for id in valid_ssts {
+                let fob = FileObject::open(&LsmStorageInner::path_of_sst_static(&path, id))?;
+                let sst = SsTable::open(id, None, fob)?;
+                state.sstables.insert(id, Arc::new(sst));
+            }
+
+            // state imm & mut
+            state.memtable = Arc::new(MemTable::create(mem));
+            state.imm_memtables = vec![];
+
+            Some(manif)
+        };
+
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
@@ -278,13 +361,25 @@ impl LsmStorageInner {
             block_cache: Arc::new(BlockCache::new(1024)),
             next_sst_id: AtomicUsize::new(1),
             compaction_controller,
-            manifest: None,
+            manifest: manif, // to change for MANIFEST
             options: options.into(),
             mvcc: None,
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
 
         Ok(storage)
+    }
+
+    pub(crate) fn flush_all_memtable(&self) -> Result<()> {
+        if !self.state.read().memtable.is_empty() {
+            self.force_freeze_memtable(&self.state_lock.lock())?;
+        }
+
+        while !self.state.read().imm_memtables.is_empty() {
+            self.force_flush_next_imm_memtable()?;
+        }
+
+        Ok(())
     }
 
     pub fn sync(&self) -> Result<()> {
@@ -418,7 +513,8 @@ impl LsmStorageInner {
     }
 
     pub(super) fn sync_dir(&self) -> Result<()> {
-        unimplemented!()
+        std::fs::File::open(&self.path)?.sync_all()?;
+        Ok(())
     }
 
     /// Force freeze the current memtable to an immutable memtable
@@ -436,6 +532,10 @@ impl LsmStorageInner {
             snapshot.imm_memtables.insert(0, old_mem);
             // update state
             *wr_state = Arc::new(snapshot);
+        }
+        if let Some(man) = &self.manifest {
+            let man_record = ManifestRecord::NewMemtable(next_sst_id);
+            man.add_record(_state_lock_observer, man_record)?;
         }
 
         Ok(())
@@ -472,9 +572,14 @@ impl LsmStorageInner {
             } else {
                 snapshot.levels.insert(0, (sst_id, vec![sst_id]));
             }
-            
+
             snapshot.sstables.insert(sst.sst_id(), Arc::new(sst));
             *write_gd = Arc::new(snapshot);
+        }
+        self.sync_dir()?;
+        if let Some(man) = &self.manifest {
+            let man_record = ManifestRecord::Flush(sst_id);
+            man.add_record(&_guard, man_record)?;
         }
         Ok(())
     }
@@ -533,23 +638,39 @@ impl LsmStorageInner {
         let two_merge_iter = TwoMergeIterator::create(mem_iter, ss_iter)?;
 
         let lvs_concat_iters = {
-            snapshot.levels.iter().map(|(_, ids)| {
-                let ssts = ids.iter().map(|id| snapshot.sstables.get(id).unwrap().clone())
-                    .collect::<Vec<_>>();
-                match _lower {
-                    Bound::Included(x) => SstConcatIterator::create_and_seek_to_key(ssts, Key::from_slice(x)).unwrap(),
-                    Bound::Excluded(x) => {
-                        let mut ite = SstConcatIterator::create_and_seek_to_key(ssts, Key::from_slice(x)).unwrap();
-                        if ite.is_valid() && ite.key().raw_ref() == x {
-                            ite.next().unwrap();
+            snapshot
+                .levels
+                .iter()
+                .map(|(_, ids)| {
+                    let ssts = ids
+                        .iter()
+                        .map(|id| snapshot.sstables.get(id).unwrap().clone())
+                        .collect::<Vec<_>>();
+                    match _lower {
+                        Bound::Included(x) => {
+                            SstConcatIterator::create_and_seek_to_key(ssts, Key::from_slice(x))
+                                .unwrap()
                         }
-                        ite
+                        Bound::Excluded(x) => {
+                            let mut ite =
+                                SstConcatIterator::create_and_seek_to_key(ssts, Key::from_slice(x))
+                                    .unwrap();
+                            if ite.is_valid() && ite.key().raw_ref() == x {
+                                ite.next().unwrap();
+                            }
+                            ite
+                        }
+                        _ => SstConcatIterator::create_and_seek_to_first(ssts).unwrap(),
                     }
-                    _ => SstConcatIterator::create_and_seek_to_first(ssts).unwrap(),
-                }
-            }).collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
         };
-        let lvs_merge_concat_iter = MergeIterator::create(lvs_concat_iters.into_iter().map(|ite| Box::new(ite)).collect::<Vec<_>>());
+        let lvs_merge_concat_iter = MergeIterator::create(
+            lvs_concat_iters
+                .into_iter()
+                .map(|ite| Box::new(ite))
+                .collect::<Vec<_>>(),
+        );
         let two_merge_iter = TwoMergeIterator::create(two_merge_iter, lvs_merge_concat_iter)?;
 
         Ok(FusedIterator::new(LsmIterator::new(
