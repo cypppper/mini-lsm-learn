@@ -217,7 +217,7 @@ impl SsTable {
         let key = Key::from_slice(_key);
         let blk = self.read_block(self.find_block_idx(key))?;
         let ite = BlockIterator::create_and_seek_to_key(blk, key);
-        if ite.key().into_inner() == _key {
+        if ite.key().raw_ref() == _key {
             Ok(Some(Bytes::copy_from_slice(ite.value())))
         } else {
             Ok(None)
@@ -255,7 +255,7 @@ impl SsTable {
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        let key = KeyBytes::from_bytes(Bytes::copy_from_slice(key.into_inner()));
+        let key = KeyBytes::from_bytes(Bytes::copy_from_slice(key.raw_ref()));
         let mut low = 0_usize;
         let mut high = self.block_meta.len();
         let mut mid;

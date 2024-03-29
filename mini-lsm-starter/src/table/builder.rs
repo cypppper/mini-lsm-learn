@@ -54,8 +54,8 @@ impl SsTableBuilder {
         let lk = old_builder.get_last_key().unwrap();
         self.meta.push(BlockMeta {
             offset: self.data.len(),
-            first_key: KeyBytes::from_bytes(Bytes::from(fk.into_inner())),
-            last_key: KeyBytes::from_bytes(Bytes::from(lk.into_inner())),
+            first_key: KeyBytes::from_bytes(Bytes::copy_from_slice(fk.raw_ref())),
+            last_key: KeyBytes::from_bytes(Bytes::copy_from_slice(lk.raw_ref())),
         });
         self.data.put(old_builder.build().encode());
     }
