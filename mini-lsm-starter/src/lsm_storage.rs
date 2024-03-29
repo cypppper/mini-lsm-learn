@@ -30,6 +30,7 @@ use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
 use crate::table::FileObject;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
+use crate::wal::Wal;
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -55,7 +56,7 @@ pub enum WriteBatchRecord<T: AsRef<[u8]>> {
 }
 
 impl LsmStorageState {
-    fn create(options: &LsmStorageOptions) -> Self {
+    fn create(options: &LsmStorageOptions, _path: impl AsRef<Path>) -> Self {
         let levels = match &options.compaction_options {
             CompactionOptions::Leveled(LeveledCompactionOptions { max_levels, .. })
             | CompactionOptions::Simple(SimpleLeveledCompactionOptions { max_levels, .. }) => (1
@@ -65,8 +66,10 @@ impl LsmStorageState {
             CompactionOptions::Tiered(_) => Vec::new(),
             CompactionOptions::NoCompaction => vec![(1, Vec::new())],
         };
+        let memtable = Arc::new(MemTable::create(0));
+
         Self {
-            memtable: Arc::new(MemTable::create(0)),
+            memtable,
             imm_memtables: Vec::new(),
             l0_sstables: Vec::new(),
             levels,
@@ -267,7 +270,7 @@ impl LsmStorageInner {
         if !path.exists() {
             std::fs::create_dir_all(path).context("failed to create DB dir")?;
         }
-        let mut state = LsmStorageState::create(&options);
+        let mut state = LsmStorageState::create(&options, path);
 
         let compaction_controller = match &options.compaction_options {
             CompactionOptions::Leveled(options) => {
@@ -282,14 +285,15 @@ impl LsmStorageInner {
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
         let mut next_sst_id = 1;
+        let mut mem = 0;
+        let mut imm = vec![];
         let manif = if !Manifest::get_path(path).exists() {
             let manif = Manifest::create(path)?;
             manif.add_record_when_init(ManifestRecord::NewMemtable(0))?;
             Some(manif)
         } else {
             let (manif, records) = Manifest::recover(path)?;
-            let mut mem = 0;
-            let mut imm = vec![];
+
             for rec in records {
                 match rec {
                     ManifestRecord::NewMemtable(id) => {
@@ -321,17 +325,6 @@ impl LsmStorageInner {
                         state = new_state;
                     }
                 }
-
-                // dump structure
-                // if !imm.is_empty() {
-                //     println!("imm ({}): {:?}", imm.len(), imm,);
-                // }
-                // if !state.l0_sstables.is_empty() {
-                //     println!("L0 ({}): {:?}", state.l0_sstables.len(), state.l0_sstables,);
-                // }
-                // for (level, files) in &state.levels {
-                //     println!("L{level} ({}): {:?}", files.len(), files);
-                // }
             }
             let mut valid_ssts = vec![];
             if !state.l0_sstables.is_empty() {
@@ -346,13 +339,36 @@ impl LsmStorageInner {
                 state.sstables.insert(id, Arc::new(sst));
             }
 
-            // state imm & mut
-            state.memtable = Arc::new(MemTable::create(mem));
-            state.imm_memtables = vec![];
-
             Some(manif)
         };
-        println!("next sst id{:?}", next_sst_id);
+
+        // state imm & mut
+        if options.enable_wal {
+            if Wal::path_of_wal(mem, path).exists() {
+                // enable wal last life
+                state.memtable = Arc::new(MemTable::recover_from_wal(
+                    mem,
+                    Wal::path_of_wal(mem, path),
+                )?);
+                state.imm_memtables = imm
+                    .iter()
+                    .map(|id| {
+                        Arc::new(
+                            MemTable::recover_from_wal(*id, Wal::path_of_wal(*id, path)).unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+            } else {
+                // disable wal last life
+                state.memtable =
+                    Arc::new(MemTable::create_with_wal(mem, Wal::path_of_wal(mem, path))?);
+                state.imm_memtables = vec![];
+            }
+        } else {
+            state.memtable = Arc::new(MemTable::create(mem));
+            state.imm_memtables = vec![];
+        }
+
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
@@ -382,7 +398,9 @@ impl LsmStorageInner {
     }
 
     pub fn sync(&self) -> Result<()> {
-        unimplemented!()
+        self.state.read().memtable.sync_wal()?;
+
+        Ok(())
     }
 
     pub fn add_compaction_filter(&self, compaction_filter: CompactionFilter) {
@@ -519,7 +537,15 @@ impl LsmStorageInner {
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
         let next_sst_id = self.next_sst_id();
-        let memtable = Arc::new(MemTable::create(next_sst_id));
+        let memtable = if self.options.enable_wal {
+            Arc::new(MemTable::create_with_wal(
+                next_sst_id,
+                Wal::path_of_wal(next_sst_id, &self.path),
+            )?)
+        } else {
+            Arc::new(MemTable::create(next_sst_id))
+        };
+
         {
             // write lock state
             let mut wr_state = self.state.write();
@@ -527,8 +553,10 @@ impl LsmStorageInner {
             let mut snapshot = wr_state.as_ref().clone();
             // use new memtable to replace old one
             let old_mem = std::mem::replace(&mut snapshot.memtable, memtable);
+            old_mem.sync_wal()?;
             // insert old memtable to imm_memtable_vec
             snapshot.imm_memtables.insert(0, old_mem);
+
             // update state
             *wr_state = Arc::new(snapshot);
         }
