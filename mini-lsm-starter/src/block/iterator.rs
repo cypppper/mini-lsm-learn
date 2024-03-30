@@ -1,7 +1,9 @@
 use std::{cmp::Ordering, sync::Arc};
 
 use crate::key::{KeySlice, KeyVec};
-use bytes::Buf;
+use bytes::{Buf, Bytes, BytesMut};
+use nom::{combinator::rest, ExtendInto};
+use std::io::BufRead;
 
 use super::Block;
 
@@ -33,12 +35,14 @@ impl BlockIterator {
     /// Creates a block iterator and seek to the first entry.
     pub fn create_and_seek_to_first(block: Arc<Block>) -> Self {
         let mut key = KeyVec::new();
-        let (_k, _v_off1, _v_off2) = Self::seeki(&block, 0);
-        key.append(_k);
+        let (_v_off1, _v_off2) = Self::get_first_value_off(&block);
+        let _first_key = Self::get_first_key(&block);
+        println!("[create and seek first] first key {:?}", key.raw_ref());
+        key.append(_first_key);
         Self {
             block,
             key: key.clone(),
-            value_range: (_v_off1, _v_off1 + _v_off2),
+            value_range: (_v_off1, _v_off2),
             idx: 0,
             first_key: key,
         }
@@ -46,13 +50,18 @@ impl BlockIterator {
 
     /// Creates a block iterator and seek to the first key that >= `key`.
     pub fn create_and_seek_to_key(block: Arc<Block>, key: KeySlice) -> Self {
-        let (mut low, mut high) = (0_usize, block.offsets.len());
+        let mut ite = Self::create_and_seek_to_first(block);
+
+        let (mut low, mut high) = (0_usize, ite.block.offsets.len());
         let mut mid;
         let mut mid_key;
 
         while low < high {
             mid = (low + high) / 2;
-            mid_key = Self::seekik(&block, mid);
+            mid_key = {
+                ite.seek_to_offset(mid);
+                ite.key().raw_ref()
+            };
             match mid_key.cmp(key.raw_ref()) {
                 Ordering::Equal => {
                     low = mid;
@@ -66,25 +75,13 @@ impl BlockIterator {
                 }
             }
         }
-        let _f_key = Self::seekik(&block, 0);
-        if low == block.offsets.len() {
-            return Self {
-                key: KeyVec::new(),
-                first_key: KeyVec::from_vec(Vec::from(_f_key)),
-                block,
-                value_range: (0, 0),
-                idx: 0,
-            };
+        if low == ite.block.offsets.len() {
+            ite.key.clear();
+            return ite;
         }
-        let (_key, _v_off, _v_len) = Self::seeki(&block, low);
+        ite.seek_to_offset(low);
 
-        Self {
-            key: KeyVec::from_vec(Vec::from(_key)),
-            first_key: KeyVec::from_vec(Vec::from(_f_key)),
-            block,
-            value_range: (_v_off, _v_off + _v_len),
-            idx: low,
-        }
+        ite
     }
 
     /// Returns the key of the current entry.
@@ -105,10 +102,7 @@ impl BlockIterator {
 
     /// Seeks to the first key in the block.
     pub fn seek_to_first(&mut self) {
-        let (_k, _v1, _vlen) = Self::seeki(&self.block, 0);
-        self.key = KeyVec::from_vec(Vec::from(_k));
-        self.value_range = (_v1, _v1 + _vlen);
-        self.idx = 0;
+        self.seek_to_offset(0);
     }
 
     /// Move to the next key in the block.
@@ -120,9 +114,7 @@ impl BlockIterator {
             self.idx = 0;
             return;
         }
-        let (_k, _v1, _vlen) = Self::seeki(&self.block, self.idx);
-        self.key = KeyVec::from_vec(Vec::from(_k));
-        self.value_range = (_v1, _v1 + _vlen);
+        self.seek_to_offset(self.idx);
     }
 
     /// Seek to the first key that >= `key`.
@@ -135,7 +127,10 @@ impl BlockIterator {
 
         while low < high {
             mid = (low + high) / 2;
-            mid_key = Self::seekik(&self.block, mid);
+            mid_key = {
+                self.seek_to_offset(mid);
+                self.key().raw_ref()
+            };
             match mid_key.cmp(key.raw_ref()) {
                 Ordering::Equal => {
                     low = mid;
@@ -157,38 +152,41 @@ impl BlockIterator {
             return;
         }
         assert!(low < self.block.offsets.len());
-        let (_key, _v_off, _v_len) = Self::seeki(&self.block, low);
-
-        self.key = KeyVec::from_vec(Vec::from(_key));
-        self.value_range = (_v_off, _v_off + _v_len);
-        self.idx = low;
+        self.seek_to_offset(low);
     }
 
-    fn seeki_k(&self, idx: usize) -> &[u8] {
-        let off = self.block.offsets[idx] as usize;
-        let (lf, mut rt) = self.block.data.split_at(off);
-        let key_len = rt.get_u16() as usize;
-        &rt[..key_len]
+    fn get_first_key(blk: &Arc<Block>) -> &[u8] {
+        let mut data = &blk.data[..];
+        let ovlp_len = data.get_u16() as usize;
+        let rest_len = data.get_u16() as usize;
+        assert!(ovlp_len == 0);
+        &data[..rest_len]
     }
 
-    fn seekik(blk: &Arc<Block>, idx: usize) -> &[u8] {
-        let off = blk.offsets[idx] as usize;
-        let off = blk.offsets[idx] as usize;
-        let (lf, mut rt) = blk.data.split_at(off);
-        let key_len = rt.get_u16() as usize;
-        &rt[..key_len]
+    fn get_first_value_off(blk: &Arc<Block>) -> (usize, usize) {
+        let mut data = &blk.data[..];
+        let ovlp_len = data.get_u16() as usize;
+        let rest_len = data.get_u16() as usize;
+        assert!(ovlp_len == 0);
+        data.consume(rest_len);
+        let v_len = data.get_u16() as usize;
+        (4 + rest_len + 2, 4 + rest_len + 2 + v_len)
     }
 
-    fn seeki(blk: &Arc<Block>, idx: usize) -> (&[u8], usize, usize) {
-        let off = blk.offsets[idx] as usize;
-        Self::seekikv(&blk.data[..], off)
-    }
-
-    fn seekikv(data: &[u8], idx: usize) -> (&[u8], usize, usize) {
-        let mut off = &data[idx..];
-        let k_len = off.get_u16() as usize;
-        let (key, mut off) = off.split_at(k_len);
-        let v_len = off.get_u16() as usize;
-        (key, idx + 2 + k_len + 2, v_len)
+    fn seek_to_offset(&mut self, offset: usize) {
+        assert!(offset < self.block.offsets.len());
+        let mut data = &self.block.data[..];
+        let kv_off = self.block.offsets[offset] as usize;
+        data = &data[kv_off..];
+        let ovlp_len = data.get_u16() as usize;
+        let rest_len = data.get_u16() as usize;
+        let rst_key;
+        (rst_key, data) = data.split_at(rest_len);
+        let v_len = data.get_u16() as usize;
+        self.key.clear();
+        self.key.append(&self.first_key.raw_ref()[..ovlp_len]);
+        self.key.append(&rst_key[..]);
+        self.value_range = (kv_off + 4 + rest_len + 2, kv_off + 4 + rest_len + 2 + v_len);
+        self.idx = offset;
     }
 }
