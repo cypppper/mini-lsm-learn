@@ -36,9 +36,11 @@ impl BlockIterator {
     pub fn create_and_seek_to_first(block: Arc<Block>) -> Self {
         let mut key = KeyVec::new();
         let (_v_off1, _v_off2) = Self::get_first_value_off(&block);
-        let _first_key = Self::get_first_key(&block);
-        println!("[create and seek first] first key {:?}", key.raw_ref());
+        let _first_key_with_ts = Self::get_first_key_with_ts(&block);
+        let (_first_key, mut ts) = _first_key_with_ts.split_at(_first_key_with_ts.len() - 8);
         key.append(_first_key);
+        key.set_ts(ts.get_u64());
+
         Self {
             block,
             key: key.clone(),
@@ -60,9 +62,9 @@ impl BlockIterator {
             mid = (low + high) / 2;
             mid_key = {
                 ite.seek_to_offset(mid);
-                ite.key().raw_ref()
+                ite.key()
             };
-            match mid_key.cmp(key.raw_ref()) {
+            match mid_key.cmp(&key) {
                 Ordering::Equal => {
                     low = mid;
                     break;
@@ -86,7 +88,7 @@ impl BlockIterator {
 
     /// Returns the key of the current entry.
     pub fn key(&self) -> KeySlice {
-        KeySlice::from_slice(self.key.raw_ref())
+        KeySlice::from_slice(self.key.key_ref(), self.key.ts())
     }
 
     /// Returns the value of the current entry.
@@ -129,9 +131,9 @@ impl BlockIterator {
             mid = (low + high) / 2;
             mid_key = {
                 self.seek_to_offset(mid);
-                self.key().raw_ref()
+                self.key()
             };
-            match mid_key.cmp(key.raw_ref()) {
+            match mid_key.cmp(&key) {
                 Ordering::Equal => {
                     low = mid;
                     break;
@@ -155,12 +157,12 @@ impl BlockIterator {
         self.seek_to_offset(low);
     }
 
-    fn get_first_key(blk: &Arc<Block>) -> &[u8] {
+    fn get_first_key_with_ts(blk: &Arc<Block>) -> &[u8] {
         let mut data = &blk.data[..];
         let ovlp_len = data.get_u16() as usize;
         let rest_len = data.get_u16() as usize;
         assert!(ovlp_len == 0);
-        &data[..rest_len]
+        &data[..(rest_len + 8)]
     }
 
     fn get_first_value_off(blk: &Arc<Block>) -> (usize, usize) {
@@ -168,9 +170,9 @@ impl BlockIterator {
         let ovlp_len = data.get_u16() as usize;
         let rest_len = data.get_u16() as usize;
         assert!(ovlp_len == 0);
-        data.consume(rest_len);
+        data.consume(rest_len + 8);
         let v_len = data.get_u16() as usize;
-        (4 + rest_len + 2, 4 + rest_len + 2 + v_len)
+        (4 + rest_len + 8 + 2, 4 + rest_len + 8 + 2 + v_len)
     }
 
     fn seek_to_offset(&mut self, offset: usize) {
@@ -180,13 +182,17 @@ impl BlockIterator {
         data = &data[kv_off..];
         let ovlp_len = data.get_u16() as usize;
         let rest_len = data.get_u16() as usize;
-        let rst_key;
-        (rst_key, data) = data.split_at(rest_len);
+        let rst_key_with_ts;
+        (rst_key_with_ts, data) = data.split_at(rest_len + 8);
         let v_len = data.get_u16() as usize;
         self.key.clear();
-        self.key.append(&self.first_key.raw_ref()[..ovlp_len]);
-        self.key.append(&rst_key[..]);
-        self.value_range = (kv_off + 4 + rest_len + 2, kv_off + 4 + rest_len + 2 + v_len);
+        self.key.append(&self.first_key.key_ref()[..ovlp_len]);
+        self.key.append(&rst_key_with_ts[..rest_len]);
+        self.key.set_ts((&rst_key_with_ts[rest_len..]).get_u64());
+        self.value_range = (
+            kv_off + 4 + rest_len + 8 + 2,
+            kv_off + 4 + rest_len + 8 + 2 + v_len,
+        );
         self.idx = offset;
     }
 }

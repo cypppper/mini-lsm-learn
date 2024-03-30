@@ -167,7 +167,6 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        println!("enter close");
         // end flush and end compaction
         self.flush_notifier.send(())?;
         let mut flush_th = self.flush_thread.lock();
@@ -463,7 +462,7 @@ impl LsmStorageInner {
             if tables_in_lv.is_empty() {
                 continue;
             }
-            let value = match tables_in_lv.partition_point(|x| x.first_key().raw_ref() < _key) {
+            let value = match tables_in_lv.partition_point(|x| x.first_key().key_ref() < _key) {
                 0 => tables_in_lv[0].get(_key)?,
                 x if x == tables_in_lv.len() => tables_in_lv[x - 1].get(_key)?,
                 x => match tables_in_lv[x - 1].get(_key)? {
@@ -591,8 +590,8 @@ impl LsmStorageInner {
                 "[flush] flushed {}.sst with size={},\n  first key {:?} last key {:?}",
                 sst_id,
                 sst.table_size(),
-                Bytes::copy_from_slice(sst.first_key().raw_ref()),
-                Bytes::copy_from_slice(sst.last_key().raw_ref())
+                Bytes::copy_from_slice(sst.first_key().key_ref()),
+                Bytes::copy_from_slice(sst.last_key().key_ref())
             );
             if self.compaction_controller.flush_to_l0() {
                 snapshot.l0_sstables.insert(0, sst.sst_id());
@@ -644,14 +643,14 @@ impl LsmStorageInner {
                 let iter = match _lower {
                     Bound::Included(x) => SsTableIterator::create_and_seek_to_key(
                         Arc::clone(table),
-                        Key::from_slice(x),
+                        Key::from_slice(x, TS_MAX),
                     )?,
                     Bound::Excluded(x) => {
                         let mut ite = SsTableIterator::create_and_seek_to_key(
                             Arc::clone(table),
-                            Key::from_slice(x),
+                            Key::from_slice(x, TS_MIN),
                         )?;
-                        if ite.key().raw_ref() == x {
+                        if ite.key().key_ref() == x {
                             ite.next()?;
                         }
                         ite
@@ -674,15 +673,18 @@ impl LsmStorageInner {
                         .map(|id| snapshot.sstables.get(id).unwrap().clone())
                         .collect::<Vec<_>>();
                     match _lower {
-                        Bound::Included(x) => {
-                            SstConcatIterator::create_and_seek_to_key(ssts, Key::from_slice(x))
-                                .unwrap()
-                        }
+                        Bound::Included(x) => SstConcatIterator::create_and_seek_to_key(
+                            ssts,
+                            Key::from_slice(x, TS_MAX),
+                        )
+                        .unwrap(),
                         Bound::Excluded(x) => {
-                            let mut ite =
-                                SstConcatIterator::create_and_seek_to_key(ssts, Key::from_slice(x))
-                                    .unwrap();
-                            if ite.is_valid() && ite.key().raw_ref() == x {
+                            let mut ite = SstConcatIterator::create_and_seek_to_key(
+                                ssts,
+                                Key::from_slice(x, TS_MIN),
+                            )
+                            .unwrap();
+                            if ite.is_valid() && ite.key().key_ref() == x {
                                 ite.next().unwrap();
                             }
                             ite
@@ -716,12 +718,12 @@ impl LsmStorageInner {
         // first key > upper: bye
         match lower {
             Bound::Included(x) => {
-                if last_key.raw_ref() < x {
+                if last_key.key_ref() < x {
                     return false;
                 }
             }
             Bound::Excluded(x) => {
-                if last_key.raw_ref() <= x {
+                if last_key.key_ref() <= x {
                     return false;
                 }
             }
@@ -729,12 +731,12 @@ impl LsmStorageInner {
         }
         match upper {
             Bound::Included(x) => {
-                if first_key.raw_ref() > x {
+                if first_key.key_ref() > x {
                     return false;
                 }
             }
             Bound::Excluded(x) => {
-                if first_key.raw_ref() >= x {
+                if first_key.key_ref() >= x {
                     return false;
                 }
             }
@@ -744,6 +746,6 @@ impl LsmStorageInner {
     }
 
     fn key_within(key: &[u8], first_key: &KeyBytes, last_key: &KeyBytes) -> bool {
-        key >= first_key.raw_ref() && key <= last_key.raw_ref()
+        key >= first_key.key_ref() && key <= last_key.key_ref()
     }
 }

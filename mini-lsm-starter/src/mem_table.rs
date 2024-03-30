@@ -12,7 +12,7 @@ use nom::AsBytes;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
-use crate::key::{Key, KeySlice};
+use crate::key::{Key, KeySlice, TS_DEFAULT};
 use crate::table::SsTableBuilder;
 use crate::wal::Wal;
 
@@ -128,7 +128,7 @@ impl MemTable {
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
     pub fn flush(&self, _builder: &mut SsTableBuilder) -> Result<()> {
         for entry in self.map.iter() {
-            _builder.add(KeySlice::from_slice(entry.key()), entry.value());
+            _builder.add(KeySlice::from_slice(entry.key(), TS_DEFAULT), entry.value());
         }
         Ok(())
     }
@@ -179,7 +179,7 @@ impl StorageIterator for MemTableIterator {
     }
 
     fn key(&self) -> KeySlice {
-        Key::from_slice(&self.borrow_item().0)
+        Key::from_slice(&self.borrow_item().0, TS_DEFAULT)
     }
 
     fn is_valid(&self) -> bool {

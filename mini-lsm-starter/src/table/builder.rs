@@ -41,7 +41,7 @@ impl SsTableBuilder {
             self.force_build_block();
             assert!(self.builder.add(key, value));
         }
-        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
+        self.key_hashes.push(farmhash::fingerprint32(key.key_ref()));
     }
 
     fn force_build_block(&mut self) {
@@ -54,8 +54,8 @@ impl SsTableBuilder {
         let lk = old_builder.get_last_key().unwrap();
         self.meta.push(BlockMeta {
             offset: self.data.len(),
-            first_key: KeyBytes::from_bytes(Bytes::copy_from_slice(fk.raw_ref())),
-            last_key: KeyBytes::from_bytes(Bytes::copy_from_slice(lk.raw_ref())),
+            first_key: KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(fk.key_ref()), fk.ts()),
+            last_key: KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(lk.key_ref()), lk.ts()),
         });
         self.data.put(old_builder.build().encode());
     }

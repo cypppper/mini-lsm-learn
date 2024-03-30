@@ -1,4 +1,5 @@
 use std::default;
+use std::io::BufRead;
 
 use bytes::{Buf, BufMut, Bytes};
 
@@ -33,10 +34,10 @@ impl BlockBuilder {
     fn compute_overlap(first_key: KeySlice, key: KeySlice) -> usize {
         let mut i = 0;
         loop {
-            if i >= first_key.len() || i >= key.len() {
+            if i >= first_key.key_len() || i >= key.key_len() {
                 break;
             }
-            if first_key.raw_ref()[i] != key.raw_ref()[i] {
+            if first_key.key_ref()[i] != key.key_ref()[i] {
                 break;
             }
             i += 1;
@@ -50,38 +51,45 @@ impl BlockBuilder {
     // else: key_overlap_len: (?), rest_key_len:(key_len-?), key(key_len-?)
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let raw_k = key.raw_ref();
+        let raw_k = key.key_ref();
         if self.offsets.is_empty() {
             // first_key
-            let external_sz: usize = 4 * 2 + raw_k.len() + value.len(); // key_overlap_len, key_rest_len, value_len, offset len 4 * 2
+            let external_sz: usize = 4 * 2 + raw_k.len() + value.len() + 8; // key_overlap_len, key_rest_len, value_len, offset len 4 * 2 || + timestamp(8)
             self.offsets.push(self.data.len() as u16);
             let mut b: Vec<u8> = vec![];
+            b.reserve(external_sz - 2);
             b.put_u16(0);
             b.put_u16(raw_k.len() as u16);
             b.put_slice(raw_k);
+            b.put_u64(key.ts());
             b.put_u16(value.len() as u16);
             b.put_slice(value);
+            assert!(b.len() == external_sz - 2);
             self.data.extend(b);
             self.current_size += external_sz;
             self.first_key.clear();
             self.first_key.append(raw_k);
+            self.first_key.set_ts(key.ts());
             self.current_size += 2; // block key len
             return true;
         }
 
         assert!(!self.first_key.is_empty());
         let overlap_len = Self::compute_overlap(self.first_key.as_key_slice(), key);
-        let external_sz = 4 * 2 + key.len() - overlap_len + value.len();
+        let external_sz = 4 * 2 + key.key_len() - overlap_len + value.len() + 8;
         if self.current_size + external_sz > self.block_size {
             return false;
         }
         self.offsets.push(self.data.len() as u16);
         let mut b: Vec<u8> = vec![];
+        b.reserve(external_sz - 2);
         b.put_u16(overlap_len as u16);
-        b.put_u16((key.len() - overlap_len) as u16);
-        b.put_slice(&raw_k[overlap_len..key.len()]);
+        b.put_u16((key.key_len() - overlap_len) as u16);
+        b.put_slice(&raw_k[overlap_len..key.key_len()]);
+        b.put_u64(key.ts());
         b.put_u16(value.len() as u16);
         b.put_slice(value);
+        assert!(b.len() == external_sz - 2);
         self.data.extend(b);
         self.current_size += external_sz;
 
@@ -102,8 +110,11 @@ impl BlockBuilder {
         let key_ovlp_len = rt.get_u16() as usize;
         let key_rest_len = rt.get_u16() as usize;
         let mut v: KeyVec = KeyVec::new();
-        v.append(&self.first_key.raw_ref()[..key_ovlp_len]);
+        v.append(&self.first_key.key_ref()[..key_ovlp_len]);
         v.append(&rt[..key_rest_len]);
+
+        rt.consume(key_rest_len);
+        v.set_ts(rt.get_u64());
         Some(v)
     }
 
@@ -112,7 +123,8 @@ impl BlockBuilder {
             return None;
         }
         let mut v: KeyVec = KeyVec::new();
-        v.append(self.first_key.raw_ref());
+        v.append(self.first_key.key_ref());
+        v.set_ts(self.first_key.ts());
         Some(v)
     }
 

@@ -241,12 +241,12 @@ impl LsmStorageInner {
                     );
                     println!(
                         "[compact] upper table first key: {:?}",
-                        bytes::Bytes::copy_from_slice(upper_iter.key().raw_ref())
+                        bytes::Bytes::copy_from_slice(upper_iter.key().key_ref())
                     );
                     if lower_iter.is_valid() {
                         println!(
                             "[compact] lower table first key: {:?}",
-                            bytes::Bytes::copy_from_slice(lower_iter.key().raw_ref())
+                            bytes::Bytes::copy_from_slice(lower_iter.key().key_ref())
                         );
                     }
                     let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
@@ -451,8 +451,8 @@ impl LsmStorageInner {
         for table in &res {
             println!(
                 "[compact]    first key {:?}, last key {:?}",
-                bytes::Bytes::copy_from_slice(table.first_key().raw_ref()),
-                bytes::Bytes::copy_from_slice(table.last_key().raw_ref())
+                bytes::Bytes::copy_from_slice(table.first_key().key_ref()),
+                bytes::Bytes::copy_from_slice(table.last_key().key_ref())
             );
         }
         Ok(res)

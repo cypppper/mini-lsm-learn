@@ -18,12 +18,13 @@ pub use iterator::SsTableIterator;
 use crate::block::{Block, BlockIterator};
 use crate::key;
 use crate::key::Key;
+use crate::key::TS_DEFAULT;
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
 use crate::mem_table;
 
 use self::bloom::Bloom;
-
+use std::io::BufRead;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockMeta {
     /// Offset of this data block.
@@ -45,18 +46,20 @@ impl BlockMeta {
         for meta in block_meta {
             estimate_sz += size_of::<u32>(); // offset
             estimate_sz += size_of::<u16>(); // key_len
-            estimate_sz += meta.first_key.len();
+            estimate_sz += meta.first_key.raw_len();
             estimate_sz += size_of::<u16>(); // key2_len
-            estimate_sz += meta.last_key.len();
+            estimate_sz += meta.last_key.raw_len();
         }
         buf.reserve(estimate_sz);
         buf.put_u32(block_meta.len() as u32);
         for meta in block_meta {
             buf.put_u32(meta.offset as u32);
-            buf.put_u16(meta.first_key.len() as u16);
-            buf.put(meta.first_key.raw_ref());
-            buf.put_u16(meta.last_key.len() as u16);
-            buf.put(meta.last_key.raw_ref());
+            buf.put_u16(meta.first_key.key_len() as u16);
+            buf.put(meta.first_key.key_ref());
+            buf.put_u64(meta.first_key.ts());
+            buf.put_u16(meta.last_key.key_len() as u16);
+            buf.put(meta.last_key.key_ref());
+            buf.put_u64(meta.last_key.ts());
         }
         buf.put_u32(meta_off);
     }
@@ -75,15 +78,21 @@ impl BlockMeta {
         for _ in 0..meta_len {
             _off = rt.get_u32();
             keyf_len = rt.get_u16();
-            _fk = rt.get(0..keyf_len as usize).unwrap();
-            rt.advance(keyf_len as usize);
+            _fk = &rt[..(keyf_len + 8) as usize];
+            rt.advance((keyf_len + 8) as usize);
             keyl_len = rt.get_u16();
-            _lk = rt.get(0..keyl_len as usize).unwrap();
-            rt.advance(keyl_len as usize);
+            _lk = &rt[..(keyl_len + 8) as usize];
+            rt.advance((keyl_len + 8) as usize);
             vec.push(BlockMeta {
                 offset: _off as usize,
-                first_key: KeyBytes::from_bytes(Bytes::copy_from_slice(_fk)),
-                last_key: KeyBytes::from_bytes(Bytes::copy_from_slice(_lk)),
+                first_key: KeyBytes::from_bytes_with_ts(
+                    Bytes::copy_from_slice(&_fk[..keyf_len as usize]),
+                    (&_fk[keyf_len as usize..]).get_u64(),
+                ),
+                last_key: KeyBytes::from_bytes_with_ts(
+                    Bytes::copy_from_slice(&_lk[..keyl_len as usize]),
+                    (&_lk[keyl_len as usize..]).get_u64(),
+                ),
             });
         }
         vec
@@ -198,6 +207,7 @@ impl SsTable {
         }
     }
 
+    // key without ts
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>, anyhow::Error> {
         // None: not exist | bytes.len == 0: deleted
         let keep_table = |_key: &[u8], filter: &Option<Bloom>| {
@@ -214,10 +224,10 @@ impl SsTable {
             return Ok(None);
         }
 
-        let key = Key::from_slice(_key);
+        let key = KeySlice::from_slice(&_key[..], TS_DEFAULT);
         let blk = self.read_block(self.find_block_idx(key))?;
         let ite = BlockIterator::create_and_seek_to_key(blk, key);
-        if ite.key().raw_ref() == _key {
+        if ite.key() == key {
             Ok(Some(Bytes::copy_from_slice(ite.value())))
         } else {
             Ok(None)
@@ -255,14 +265,13 @@ impl SsTable {
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        let key = KeyBytes::from_bytes(Bytes::copy_from_slice(key.raw_ref()));
         let mut low = 0_usize;
         let mut high = self.block_meta.len();
         let mut mid;
         let mut mid_key;
         while low < high {
             mid = (low + high) / 2;
-            mid_key = self.block_meta[mid].first_key.clone();
+            mid_key = self.block_meta[mid].first_key.as_key_slice();
             match mid_key.cmp(&key) {
                 Ordering::Equal => {
                     return mid;

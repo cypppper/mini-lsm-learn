@@ -5,7 +5,7 @@ use std::ops::Bound;
 
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{Key, KeyBytes};
+use crate::key::{Key, KeyBytes, TS_MAX, TS_MIN};
 use crate::table::SsTableIterator;
 
 use crate::{
@@ -31,10 +31,24 @@ pub struct LsmIterator {
 }
 
 impl LsmIterator {
+    // excluded: < TS_MAX
+    // included: <= TS_MIN
     pub(crate) fn new(iter: LsmIteratorInner, upper: Bound<&[u8]>) -> Result<Self> {
         let (upper, is_upper_included) = match upper {
-            Bound::Included(x) => (Some(KeyBytes::from_bytes(Bytes::copy_from_slice(x))), 1_u8),
-            Bound::Excluded(x) => (Some(KeyBytes::from_bytes(Bytes::copy_from_slice(x))), 0),
+            Bound::Included(x) => (
+                Some(KeyBytes::from_bytes_with_ts(
+                    Bytes::copy_from_slice(x),
+                    TS_MIN,
+                )),
+                1_u8,
+            ),
+            Bound::Excluded(x) => (
+                Some(KeyBytes::from_bytes_with_ts(
+                    Bytes::copy_from_slice(x),
+                    TS_MAX,
+                )),
+                0,
+            ),
             _ => (None, 0),
         };
         Ok(Self {
@@ -46,8 +60,8 @@ impl LsmIterator {
 
     fn exceed_upper(&self) -> bool {
         match (&self.upper, &self.is_upper_included) {
-            (Some(x), i) if *i > 0 => self.inner.key().raw_ref() > x.raw_ref(), // include upper
-            (Some(x), 0) => self.inner.key().raw_ref() >= x.raw_ref(),
+            (Some(x), i) if *i > 0 => self.inner.key() > x.as_key_slice(), // include upper
+            (Some(x), 0) => self.inner.key() >= x.as_key_slice(),          // exclude upper
             _ => false,
         }
     }
@@ -61,7 +75,7 @@ impl StorageIterator for LsmIterator {
     }
 
     fn key(&self) -> &[u8] {
-        self.inner.key().raw_ref()
+        self.inner.key().key_ref()
     }
 
     fn value(&self) -> &[u8] {
