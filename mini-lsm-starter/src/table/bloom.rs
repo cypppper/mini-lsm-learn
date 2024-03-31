@@ -1,7 +1,7 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
 use anyhow::Result;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Implements a bloom filter
 pub struct Bloom {
@@ -46,9 +46,13 @@ impl<T: AsMut<[u8]>> BitSliceMut for T {
 
 impl Bloom {
     /// Decode a bloom filter
-    pub fn decode(buf: &[u8]) -> Result<Self> {
-        let filter = &buf[..buf.len() - 1];
-        let k = buf[buf.len() - 1];
+    pub fn decode(bloom_with_crc_buf: &[u8]) -> Result<Self> {
+        let filter = &bloom_with_crc_buf[..bloom_with_crc_buf.len() - 5];
+        let k = bloom_with_crc_buf[bloom_with_crc_buf.len() - 5];
+        let raw_bytes = &bloom_with_crc_buf[..(bloom_with_crc_buf.len() - 4)];
+        let sto_crc32 = (&bloom_with_crc_buf[(bloom_with_crc_buf.len() - 4)..]).get_u32();
+        let cal_crc32 = crc32fast::hash(raw_bytes);
+        assert!(sto_crc32 == cal_crc32);
         Ok(Self {
             filter: filter.to_vec().into(),
             k,
@@ -57,8 +61,12 @@ impl Bloom {
 
     /// Encode a bloom filter
     pub fn encode(&self, buf: &mut Vec<u8>) {
-        buf.extend(&self.filter);
-        buf.put_u8(self.k);
+        let mut encode_byte = BytesMut::new();
+        encode_byte.put(&self.filter[..]);
+        encode_byte.put_u8(self.k);
+        let crc32 = crc32fast::hash(&encode_byte);
+        buf.extend(encode_byte);
+        buf.put_u32(crc32);
     }
 
     /// Get bloom filter bits per key from entries count and FPR

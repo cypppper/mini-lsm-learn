@@ -50,11 +50,14 @@ impl Wal {
 
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
         let mut buf: Vec<u8> = vec![];
-        buf.reserve(2 + _key.len() + 2 + _value.len());
+        buf.reserve(2 + _key.len() + 2 + _value.len() + 4);
         buf.put_u16(_key.len() as u16);
         buf.put_slice(_key);
         buf.put_u16(_value.len() as u16);
         buf.put_slice(_value);
+        let crc = crc32fast::hash(&buf);
+        buf.put_u32(crc);
+
         let mut file = self.file.lock();
         file.write_all(&buf)?;
         file.flush()?;
@@ -73,12 +76,18 @@ impl Wal {
         if buf.is_empty() {
             return None;
         }
+        let buf_copy = &buf[..];
+
         let key_len = buf.get_u16();
         let (key, _) = buf.split_at(key_len as usize);
-        buf.consume(key_len as usize);
+        buf.advance(key_len as usize);
         let value_len = buf.get_u16();
         let (value, _) = buf.split_at(value_len as usize);
-        buf.consume(value_len as usize);
+        buf.advance(value_len as usize);
+        let sto_crc32 = buf.get_u32();
+        let wal_len = 2 + key_len + 2 + value_len;
+        let cal_crc32 = crc32fast::hash(&buf_copy[..wal_len as usize]);
+        assert!(cal_crc32 == sto_crc32);
         Some((key, value))
     }
 }
