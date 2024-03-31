@@ -643,12 +643,12 @@ impl LsmStorageInner {
                 let iter = match _lower {
                     Bound::Included(x) => SsTableIterator::create_and_seek_to_key(
                         Arc::clone(table),
-                        Key::from_slice(x, TS_MAX),
+                        Key::from_slice(x, TS_RANGE_BEGIN),
                     )?,
                     Bound::Excluded(x) => {
                         let mut ite = SsTableIterator::create_and_seek_to_key(
                             Arc::clone(table),
-                            Key::from_slice(x, TS_MIN),
+                            Key::from_slice(x, TS_RANGE_END),
                         )?;
                         if ite.key().key_ref() == x {
                             ite.next()?;
@@ -675,13 +675,13 @@ impl LsmStorageInner {
                     match _lower {
                         Bound::Included(x) => SstConcatIterator::create_and_seek_to_key(
                             ssts,
-                            Key::from_slice(x, TS_MAX),
+                            Key::from_slice(x, TS_RANGE_BEGIN),
                         )
                         .unwrap(),
                         Bound::Excluded(x) => {
                             let mut ite = SstConcatIterator::create_and_seek_to_key(
                                 ssts,
-                                Key::from_slice(x, TS_MIN),
+                                Key::from_slice(x, TS_RANGE_END),
                             )
                             .unwrap();
                             if ite.is_valid() && ite.key().key_ref() == x {
