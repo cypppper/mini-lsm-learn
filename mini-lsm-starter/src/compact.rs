@@ -20,7 +20,7 @@ use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
-use crate::key::KeySlice;
+use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
@@ -179,7 +179,7 @@ impl LsmStorageInner {
                 // let concat_ite = SstConcatIterator::create_and_seek_to_first(concat_ssts)?;
                 // let mut two_merge_ite = TwoMergeIterator::create(merge_ite, concat_ite)?;
 
-                self.build_ssts_from_iter(&mut merge_ite, _task.compact_to_bottom_level())
+                self.build_ssts_from_iter(&mut merge_ite, false)
             }
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
@@ -204,7 +204,7 @@ impl LsmStorageInner {
                 let l1_iter = SstConcatIterator::create_and_seek_to_first(l1_tables)?;
                 let mut merge_two_iter = TwoMergeIterator::create(l0_merge_iter, l1_iter)?;
 
-                self.build_ssts_from_iter(&mut merge_two_iter, _task.compact_to_bottom_level())
+                self.build_ssts_from_iter(&mut merge_two_iter, false)
             }
             CompactionTask::Simple(task) => {
                 let upper_tables = task
@@ -231,7 +231,7 @@ impl LsmStorageInner {
                     );
                     let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
                     let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_ssts_from_iter(&mut merge_two_iter, _task.compact_to_bottom_level())
+                    self.build_ssts_from_iter(&mut merge_two_iter, false)
                 } else {
                     let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_tables)?;
                     let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
@@ -250,7 +250,7 @@ impl LsmStorageInner {
                         );
                     }
                     let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_ssts_from_iter(&mut merge_two_iter, _task.compact_to_bottom_level())
+                    self.build_ssts_from_iter(&mut merge_two_iter, false)
                 }
             }
             _ => Ok(vec![]),
@@ -413,18 +413,33 @@ impl LsmStorageInner {
     fn build_ssts_from_iter(
         &self,
         iter: &mut impl for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
-        is_bottom: bool,
+        _is_bottom: bool,
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut res = vec![];
         let mut sst_builder = SsTableBuilder::new(self.options.block_size);
+        let mut cur_key;
         while iter.is_valid() {
-            while is_bottom && iter.is_valid() && iter.value().is_empty() {
+            cur_key = KeyBytes::from_bytes_with_ts(
+                Bytes::copy_from_slice(iter.key().key_ref()),
+                iter.key().ts(),
+            );
+            while iter.key().key_ref() == cur_key.key_ref() {
+                // while is_bottom && iter.is_valid() && iter.value().is_empty() {
+                //     iter.next()?;
+                // }
+                if !iter.is_valid() {
+                    break;
+                }
+                sst_builder.add(iter.key(), iter.value());
                 iter.next()?;
             }
+            // while is_bottom && iter.is_valid() && iter.value().is_empty() {
+            //     iter.next()?;
+            // }
             if !iter.is_valid() {
                 break;
             }
-            sst_builder.add(iter.key(), iter.value());
+            // sst_builder.add(iter.key(), iter.value());
             if sst_builder.estimated_size() >= self.options.target_sst_size {
                 let old_sst_builder = std::mem::replace(
                     &mut sst_builder,
@@ -437,7 +452,7 @@ impl LsmStorageInner {
                     self.path_of_sst(id),
                 )?));
             }
-            iter.next()?;
+            // iter.next()?;
         }
         if !sst_builder.is_empty() {
             let id = self.next_sst_id();

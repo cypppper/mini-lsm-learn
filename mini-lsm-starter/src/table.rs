@@ -12,9 +12,10 @@ use anyhow::anyhow;
 use anyhow::Result;
 pub use builder::SsTableBuilder;
 use bytes::BufMut;
-use bytes::{Buf, Bytes};
+use bytes::{Buf, Bytes, BytesMut};
 pub use iterator::SsTableIterator;
 
+use crate::block;
 use crate::block::{Block, BlockIterator};
 use crate::key;
 use crate::key::Key;
@@ -40,9 +41,8 @@ impl BlockMeta {
     /// You may add extra fields to the buffer,
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
     pub fn encode_block_meta(block_meta: &[BlockMeta], buf: &mut Vec<u8>) {
-        let meta_off = buf.len() as u32;
-        let mut estimate_sz: usize = size_of::<u32>(); // meta len
-        estimate_sz += size_of::<u32>(); // meta offset
+        let mut estimate_sz: usize = size_of::<u32>() * 2; // meta len + crc_32
+
         for meta in block_meta {
             estimate_sz += size_of::<u32>(); // offset
             estimate_sz += size_of::<u16>(); // key_len
@@ -51,17 +51,23 @@ impl BlockMeta {
             estimate_sz += meta.last_key.raw_len();
         }
         buf.reserve(estimate_sz);
-        buf.put_u32(block_meta.len() as u32);
+        let mut encode_bytes = BytesMut::new();
+        encode_bytes.put_u32(block_meta.len() as u32);
+
         for meta in block_meta {
-            buf.put_u32(meta.offset as u32);
-            buf.put_u16(meta.first_key.key_len() as u16);
-            buf.put(meta.first_key.key_ref());
-            buf.put_u64(meta.first_key.ts());
-            buf.put_u16(meta.last_key.key_len() as u16);
-            buf.put(meta.last_key.key_ref());
-            buf.put_u64(meta.last_key.ts());
+            encode_bytes.put_u32(meta.offset as u32);
+            encode_bytes.put_u16(meta.first_key.key_len() as u16);
+            encode_bytes.put(meta.first_key.key_ref());
+            encode_bytes.put_u64(meta.first_key.ts());
+            encode_bytes.put_u16(meta.last_key.key_len() as u16);
+            encode_bytes.put(meta.last_key.key_ref());
+            encode_bytes.put_u64(meta.last_key.ts());
         }
-        buf.put_u32(meta_off);
+
+        let crc32 = crc32fast::hash(&encode_bytes);
+        encode_bytes.put_u32(crc32);
+        assert!(encode_bytes.len() == estimate_sz);
+        buf.extend(encode_bytes);
     }
 
     /// Decode block meta from a buffer.
@@ -160,19 +166,24 @@ impl SsTable {
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
         let len = file.size();
-        let raw_bloom_offset = file.read(len - 4, 4)?;
-        let bloom_offset = (&raw_bloom_offset[..]).get_u32() as u64;
-        let raw_bloom = file.read(bloom_offset, len - 4 - bloom_offset)?;
+        let bloom_offset = (&(file.read(len - 4, 4)?)[..]).get_u32() as u64;
+        let bloom_with_crc_len = (len - 4) - bloom_offset;
+        let raw_bloom = file.read(bloom_offset, bloom_with_crc_len)?;
         let bloom_filter = Bloom::decode(&raw_bloom)?;
 
-        let res = file.read(bloom_offset - 4, 4)?;
-        let block_meta_off = (&res[..]).get_u32() as usize;
-        let block_meta_code = file.read(
-            block_meta_off as u64,
-            bloom_offset - 4 - block_meta_off as u64,
-        )?;
-
-        let meta = BlockMeta::decode_block_meta(&block_meta_code[..]);
+        let block_meta_off = (&file.read(bloom_offset - 4, 4)?[..]).get_u32() as usize;
+        let block_metas_with_crc_size = (bloom_offset - 4) - block_meta_off as u64;
+        let block_metas_with_crc_bytes =
+            file.read(block_meta_off as u64, block_metas_with_crc_size)?;
+        let cal_crc = crc32fast::hash(
+            &block_metas_with_crc_bytes[..(block_metas_with_crc_size - 4) as usize],
+        );
+        let sto_crc =
+            (&block_metas_with_crc_bytes[(block_metas_with_crc_size - 4) as usize..]).get_u32();
+        assert!(cal_crc == sto_crc);
+        let meta = BlockMeta::decode_block_meta(
+            &block_metas_with_crc_bytes[..(block_metas_with_crc_size as usize - 4)],
+        );
 
         Ok(Self {
             file,
@@ -207,6 +218,20 @@ impl SsTable {
         }
     }
 
+    pub fn bloom_filter(&self, _key: &[u8]) -> bool {
+        let keep_table = |_key: &[u8], filter: &Option<Bloom>| {
+            if let Some(bloom) = filter {
+                if bloom.may_contain(farmhash::fingerprint32(_key)) {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+            false
+        };
+        keep_table(_key, &self.bloom)
+    }
+
     // key without ts
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>, anyhow::Error> {
         // None: not exist | bytes.len == 0: deleted
@@ -236,16 +261,17 @@ impl SsTable {
 
     /// Read a block from the disk.
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
-        let meta_off_st = self.block_meta[block_idx].offset as u64;
-        let meta_off_ed = match block_idx.cmp(&(self.block_meta.len() - 1)) {
+        let block_off_st = self.block_meta[block_idx].offset as u64;
+        let block_off_ed = match block_idx.cmp(&(self.block_meta.len() - 1)) {
             std::cmp::Ordering::Equal => self.block_meta_offset,
             _ => self.block_meta[block_idx + 1].offset,
         } as u64;
-        let block_code = self
-            .file
-            .read(meta_off_st, meta_off_ed - meta_off_st)
-            .unwrap();
-        let block = Block::decode(&block_code[..]);
+        let read_len = block_off_ed - block_off_st;
+        let block_code = self.file.read(block_off_st, read_len).unwrap();
+        let cal_crc32 = crc32fast::hash(&block_code[..(read_len as usize - 4)]);
+        let sto_crc32 = (&block_code[(read_len as usize - 4)..]).get_u32();
+        assert!(cal_crc32 == sto_crc32);
+        let block = Block::decode(&block_code[..(read_len as usize - 4)]);
         Ok(Arc::new(block))
     }
 

@@ -1,6 +1,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use std::ops::Bound;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -69,6 +70,24 @@ impl SsTableIterator {
             blk_iter: ite,
             blk_idx: idx,
         })
+    }
+
+    pub fn create_and_seek_to_key_lower_bound(
+        table: Arc<SsTable>,
+        lower: Bound<KeySlice>,
+    ) -> Result<Self> {
+        let ite = if let Bound::Included(x) = lower {
+            Self::create_and_seek_to_key(table, x)?
+        } else if let Bound::Excluded(x) = lower {
+            let mut ite = Self::create_and_seek_to_key(table, x)?;
+            if ite.key() == x {
+                ite.next()?;
+            }
+            ite
+        } else {
+            Self::create_and_seek_to_first(table)?
+        };
+        Ok(ite)
     }
 
     /// Seek to the first key-value pair which >= `key`.

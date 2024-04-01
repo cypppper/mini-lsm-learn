@@ -46,7 +46,7 @@ pub struct MergeIterator<I: StorageIterator> {
     current: Option<HeapWrapper<I>>,
 }
 
-impl<I: StorageIterator> MergeIterator<I> {
+impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
         if iters.is_empty() {
             return Self {
@@ -71,6 +71,11 @@ impl<I: StorageIterator> MergeIterator<I> {
         let cur_key_before_next = self.current.as_ref().unwrap();
         while let Some(mut inner_iter) = self.iters.peek_mut() {
             if inner_iter.1.key().cmp(&cur_key_before_next.1.key()) == Ordering::Equal {
+                println!(
+                    "pass a key{:?}, ts: {:?}",
+                    inner_iter.1.key().key_ref(),
+                    inner_iter.1.key().ts()
+                );
                 inner_iter.1.next()?;
 
                 if !inner_iter.1.is_valid() {

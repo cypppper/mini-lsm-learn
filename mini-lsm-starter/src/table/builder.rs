@@ -57,7 +57,10 @@ impl SsTableBuilder {
             first_key: KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(fk.key_ref()), fk.ts()),
             last_key: KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(lk.key_ref()), lk.ts()),
         });
-        self.data.put(old_builder.build().encode());
+        let block_encode = old_builder.build().encode();
+        let crc32 = crc32fast::hash(&block_encode);
+        self.data.put(block_encode);
+        self.data.put_u32(crc32);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -97,13 +100,15 @@ impl SsTableBuilder {
         let meta_off: usize = self.data.len();
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
         self.data.put_u32(meta_off as u32);
+
         // bloom filter
         let bloom = Bloom::build_from_key_hashes(
             &self.key_hashes,
             Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01),
         );
+
         let bloom_offset = self.data.len();
-        bloom.encode(&mut self.data);
+        bloom.encode(&mut self.data); // bloom + crc32
         self.data.put_u32(bloom_offset as u32);
 
         let file = FileObject::create(path.as_ref(), self.data)?;

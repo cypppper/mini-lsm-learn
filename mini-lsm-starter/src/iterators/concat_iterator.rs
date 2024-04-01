@@ -1,6 +1,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use std::ops::Bound;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -68,6 +69,33 @@ impl SstConcatIterator {
         ite.next_until_valid();
 
         Ok(ite)
+    }
+
+    pub fn create_and_seek_to_key_lower_bound(
+        sstables: Vec<Arc<SsTable>>,
+        _key: Bound<KeySlice>,
+    ) -> Result<Self> {
+        if sstables.is_empty() {
+            return Ok(Self {
+                current: None,
+                next_sst_idx: 1,
+                sstables,
+            });
+        }
+
+        if let Bound::Excluded(key) = _key {
+            let mut ite = Self::create_and_seek_to_key(sstables, key)?;
+            if ite.key() == key {
+                ite.next()?;
+            }
+            Ok(ite)
+        } else if let Bound::Included(key) = _key {
+            let ite = Self::create_and_seek_to_key(sstables, key)?;
+            Ok(ite)
+        } else {
+            let ite = Self::create_and_seek_to_first(sstables)?;
+            Ok(ite)
+        }
     }
 
     fn next_until_valid(&mut self) {
