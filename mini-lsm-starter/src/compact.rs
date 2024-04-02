@@ -128,7 +128,7 @@ impl LsmStorageInner {
                     .map(|id| snapshot.sstables.get(id).unwrap().clone())
                     .collect::<Vec<_>>();
                 let lower_ite = SstConcatIterator::create_and_seek_to_first(concat_ssts_lower)?;
-                if let Some(_) = task.upper_level {
+                if task.upper_level.is_some() {
                     let concat_ssts_upper = task
                         .upper_level_sst_ids
                         .iter()
@@ -253,7 +253,6 @@ impl LsmStorageInner {
                     self.build_ssts_from_iter(&mut merge_two_iter, false)
                 }
             }
-            _ => Ok(vec![]),
         }
     }
 

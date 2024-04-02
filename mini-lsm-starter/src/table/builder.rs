@@ -19,6 +19,7 @@ pub struct SsTableBuilder {
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
     key_hashes: Vec<u32>,
+    max_ts: u64,
 }
 
 impl SsTableBuilder {
@@ -36,6 +37,7 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
+        self.max_ts = self.max_ts.max(key.ts());
         if !self.builder.add(key, value) {
             // full
             self.force_build_block();
@@ -98,8 +100,18 @@ impl SsTableBuilder {
         }
 
         let meta_off: usize = self.data.len();
-        BlockMeta::encode_block_meta(&self.meta, &mut self.data);
+
+        let mut meta_encode_bytes_with_max_ts = vec![];
+        BlockMeta::encode_block_meta(&self.meta, &mut meta_encode_bytes_with_max_ts);
+        meta_encode_bytes_with_max_ts.put_u64(self.max_ts);
+
+        let crc32 = crc32fast::hash(&meta_encode_bytes_with_max_ts);
+        meta_encode_bytes_with_max_ts.put_u32(crc32);
+
+        self.data.extend(meta_encode_bytes_with_max_ts);
         self.data.put_u32(meta_off as u32);
+
+        /* meta_len | metas | max_ts | crc32 | meta_off | bloom | bloom_crc | blomm_off */
 
         // bloom filter
         let bloom = Bloom::build_from_key_hashes(
@@ -124,7 +136,7 @@ impl SsTableBuilder {
             first_key: fk,
             last_key: lk,
             bloom: Some(bloom),
-            max_ts: 0,
+            max_ts: self.max_ts,
         })
     }
 

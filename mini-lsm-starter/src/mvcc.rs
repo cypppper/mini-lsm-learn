@@ -9,6 +9,8 @@ use std::{
     sync::Arc,
 };
 
+use bytes::Bytes;
+use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 
 use crate::lsm_storage::LsmStorageInner;
@@ -55,6 +57,16 @@ impl LsmMvccInner {
     }
 
     pub fn new_txn(&self, inner: Arc<LsmStorageInner>, serializable: bool) -> Arc<Transaction> {
-        unimplemented!()
+        // TODO: serializable mean?
+
+        let ts = self.ts.lock().0;
+        let txn = Transaction {
+            read_ts: ts,
+            inner,
+            local_storage: Arc::new(SkipMap::<Bytes, Bytes>::new()),
+            committed: Arc::new(false.into()),
+            key_hashes: None,
+        };
+        Arc::new(txn)
     }
 }

@@ -1,7 +1,8 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
 
 use std::fs::File;
-use std::io::{BufRead, BufWriter, Write};
+use std::io::{ BufWriter, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -35,13 +36,18 @@ impl Wal {
         _path.as_ref().join(format!("{id}.wal"))
     }
 
-    pub fn recover(_path: impl AsRef<Path>, _skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<Self> {
+    pub fn recover(
+        _path: impl AsRef<Path>,
+        _skiplist: &SkipMap<KeyBytes, Bytes>,
+        max_ts: &mut u64,
+    ) -> Result<Self> {
         if !_path.as_ref().exists() {
             panic!("wal file {:?} NOT existed", _path.as_ref().to_path_buf());
         }
         let recover_data = std::fs::read(_path.as_ref())?;
         let mut buf = &recover_data[..];
         while let Some((key, ts, value)) = Self::parse_kv(&mut buf) {
+            *max_ts = (*max_ts.deref()).max(ts);
             let kby = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(key), ts);
             _skiplist.insert(kby, Bytes::copy_from_slice(value));
         }
@@ -52,8 +58,7 @@ impl Wal {
     }
 
     pub fn put(&self, _key: &[u8], _ts: u64, _value: &[u8]) -> Result<()> {
-        let mut buf: Vec<u8> = vec![];
-        buf.reserve(2 + _key.len() + 8 + 2 + _value.len() + 4); // ts , crc
+        let mut buf: Vec<u8> = Vec::with_capacity(2 + _key.len() + 8 + 2 + _value.len() + 4); // ts , crc
         buf.put_u16(_key.len() as u16);
         buf.put_slice(_key);
         buf.put_u64(_ts);

@@ -5,7 +5,7 @@ use std::ops::Bound;
 
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{Key, KeyBytes, KeySlice, TS_MAX, TS_MIN};
+use crate::key::{KeyBytes, KeySlice};
 use crate::table::SsTableIterator;
 
 use crate::{
@@ -28,12 +28,17 @@ pub struct LsmIterator {
     // has upper & not inclu: exclude upper
     upper: Option<KeyBytes>,
     is_upper_included: u8,
+    read_ts: u64,
 }
 
 impl LsmIterator {
     // excluded: < TS_MAX
     // included: <= TS_MIN
-    pub(crate) fn new(iter: LsmIteratorInner, upper: Bound<KeySlice>) -> Result<Self> {
+    pub(crate) fn new(
+        iter: LsmIteratorInner,
+        upper: Bound<KeySlice>,
+        read_ts: u64,
+    ) -> Result<Self> {
         let (upper, is_upper_included) = match upper {
             Bound::Included(x) => (
                 Some(KeyBytes::from_bytes_with_ts(
@@ -51,11 +56,17 @@ impl LsmIterator {
             ),
             _ => (None, 0),
         };
-        Ok(Self {
+
+        let mut ite = Self {
             inner: iter,
             upper,
             is_upper_included,
-        })
+            read_ts,
+        };
+        while ite.is_valid() && ite.is_exceed_ts() {
+            ite.inner.next()?;
+        }
+        Ok(ite)
     }
 
     fn exceed_upper(&self) -> bool {
@@ -64,6 +75,10 @@ impl LsmIterator {
             (Some(x), 0) => self.inner.key() >= x.as_key_slice(),          // exclude upper
             _ => false,
         }
+    }
+
+    fn is_exceed_ts(&self) -> bool {
+        self.key().ts() > self.read_ts
     }
 }
 
@@ -83,7 +98,11 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        self.inner.next()
+        self.inner.next()?;
+        while self.is_valid() && self.is_exceed_ts() {
+            self.inner.next()?;
+        }
+        Ok(())
     }
 
     fn num_active_iterators(&self) -> usize {
@@ -176,13 +195,11 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         }
         let old_key = self.key().to_vec();
 
-        match self.skip_dup(&old_key) {
-            Err(x) => {
-                self.has_errored = true;
-                return Err(x);
-            }
-            _ => {}
+        if let Err(x) = self.skip_dup(&old_key) {
+            self.has_errored = true;
+            return Err(x);
         }
+
         self.format_iter()
     }
 

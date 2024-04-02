@@ -7,7 +7,7 @@ use std::ops::{Deref, DerefMut};
 
 use anyhow::Result;
 
-use crate::key::{Key, KeySlice};
+use crate::key::KeySlice;
 
 use super::StorageIterator;
 

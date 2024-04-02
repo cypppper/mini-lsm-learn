@@ -12,6 +12,7 @@ use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 use parking_lot::Mutex;
+use serde::de::value;
 
 use crate::{
     iterators::{two_merge_iterator::TwoMergeIterator, StorageIterator},
@@ -29,12 +30,41 @@ pub struct Transaction {
 }
 
 impl Transaction {
+    fn map_ref_to_bytes_bound(ori: Bound<&[u8]>) -> Bound<Bytes> {
+        match ori {
+            Bound::Included(x) => Bound::Included(Bytes::copy_from_slice(x)),
+            Bound::Excluded(x) => Bound::Excluded(Bytes::copy_from_slice(x)),
+            Bound::Unbounded => Bound::Unbounded,
+        }
+    }
+
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        unimplemented!()
+        let value_bytes = if let Some(local_get_res) = self.local_storage.get(key) {
+            let local_res = local_get_res.value().clone();
+            if local_res.is_empty() {
+                None
+            } else {
+                Some(local_res)
+            }
+        } else {
+            self.inner.get_with_ts(key, self.read_ts)?
+        };
+
+        Ok(value_bytes)
     }
 
     pub fn scan(self: &Arc<Self>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
-        unimplemented!()
+        let scan_ite = self.inner.scan_with_ts(lower, upper, self.read_ts)?;
+        let lower_bd = Self::map_ref_to_bytes_bound(lower);
+        let upper_bd = Self::map_ref_to_bytes_bound(upper);
+        let local_ite: TxnLocalIterator = TxnLocalIteratorBuilder {
+            map: self.local_storage.clone(),
+            iter_builder: |map| map.range((lower_bd, upper_bd)),
+            item: (Bytes::new(), Bytes::new()),
+        }
+        .build();
+        let two_merge_ite = TwoMergeIterator::create(local_ite, scan_ite)?;
+        TxnIterator::create(self.clone(), two_merge_ite)
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) {
@@ -81,16 +111,16 @@ impl StorageIterator for TxnLocalIterator {
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        false
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
 }
 
 pub struct TxnIterator {
-    _txn: Arc<Transaction>,
+    txn: Arc<Transaction>,
     iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
 }
 
@@ -99,7 +129,7 @@ impl TxnIterator {
         txn: Arc<Transaction>,
         iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
     ) -> Result<Self> {
-        unimplemented!()
+        Ok(Self { txn, iter })
     }
 }
 
@@ -119,7 +149,7 @@ impl StorageIterator for TxnIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.iter.next()
     }
 
     fn num_active_iterators(&self) -> usize {

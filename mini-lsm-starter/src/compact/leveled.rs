@@ -138,7 +138,7 @@ impl LeveledCompactionController {
 
         let mut pri = vec![];
         for lv_idx in (valid_idx..=level_sz.len() - 2).rev() {
-            target_sz = target_sz / self.options.level_size_multiplier as f64;
+            target_sz /= self.options.level_size_multiplier as f64;
             pri.push((lv_idx + 1, level_sz[lv_idx] / target_sz));
         }
         pri.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
@@ -179,11 +179,9 @@ impl LeveledCompactionController {
         if let Some(lv) = _task.upper_level {
             new_state.levels[lv - 1]
                 .1
-                .retain(|id| !old_upper_ids.remove(&id));
+                .retain(|id| !old_upper_ids.remove(id));
         } else {
-            new_state
-                .l0_sstables
-                .retain(|id| !old_upper_ids.remove(&id));
+            new_state.l0_sstables.retain(|id| !old_upper_ids.remove(id));
         }
         new_state.levels[_task.lower_level - 1]
             .1

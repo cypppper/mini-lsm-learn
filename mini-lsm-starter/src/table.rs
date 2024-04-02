@@ -15,17 +15,12 @@ use bytes::BufMut;
 use bytes::{Buf, Bytes, BytesMut};
 pub use iterator::SsTableIterator;
 
-use crate::block;
 use crate::block::{Block, BlockIterator};
-use crate::key;
-use crate::key::Key;
 use crate::key::TS_DEFAULT;
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
-use crate::mem_table;
 
 use self::bloom::Bloom;
-use std::io::BufRead;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockMeta {
     /// Offset of this data block.
@@ -41,7 +36,7 @@ impl BlockMeta {
     /// You may add extra fields to the buffer,
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
     pub fn encode_block_meta(block_meta: &[BlockMeta], buf: &mut Vec<u8>) {
-        let mut estimate_sz: usize = size_of::<u32>() * 2; // meta len + crc_32
+        let mut estimate_sz: usize = size_of::<u32>() * 2 + 8; // meta len +  max_ts(outside) + crc_32(outside)
 
         for meta in block_meta {
             estimate_sz += size_of::<u32>(); // offset
@@ -64,9 +59,7 @@ impl BlockMeta {
             encode_bytes.put_u64(meta.last_key.ts());
         }
 
-        let crc32 = crc32fast::hash(&encode_bytes);
-        encode_bytes.put_u32(crc32);
-        assert!(encode_bytes.len() == estimate_sz);
+        assert!(encode_bytes.len() == estimate_sz - 8 - 4);
         buf.extend(encode_bytes);
     }
 
@@ -164,26 +157,34 @@ impl SsTable {
     }
 
     /// Open SSTable from a file.
+    /// /* ( meta_len | metas | max_ts ) | crc32 | meta_off | bloom | bloom_crc | blomm_off */
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
         let len = file.size();
         let bloom_offset = (&(file.read(len - 4, 4)?)[..]).get_u32() as u64;
         let bloom_with_crc_len = (len - 4) - bloom_offset;
         let raw_bloom = file.read(bloom_offset, bloom_with_crc_len)?;
-        let bloom_filter = Bloom::decode(&raw_bloom)?;
+        let bloom_filter = Bloom::decode(&raw_bloom)?; // bloom decode with crc check
 
         let block_meta_off = (&file.read(bloom_offset - 4, 4)?[..]).get_u32() as usize;
-        let block_metas_with_crc_size = (bloom_offset - 4) - block_meta_off as u64;
-        let block_metas_with_crc_bytes =
-            file.read(block_meta_off as u64, block_metas_with_crc_size)?;
+        let block_metas_with_maxts_and_crc_size = (bloom_offset - 4) - block_meta_off as u64;
+        let block_metas_with_maxts_and_crc_bytes =
+            file.read(block_meta_off as u64, block_metas_with_maxts_and_crc_size)?;
         let cal_crc = crc32fast::hash(
-            &block_metas_with_crc_bytes[..(block_metas_with_crc_size - 4) as usize],
+            &block_metas_with_maxts_and_crc_bytes
+                [..(block_metas_with_maxts_and_crc_size - 4) as usize],
         );
-        let sto_crc =
-            (&block_metas_with_crc_bytes[(block_metas_with_crc_size - 4) as usize..]).get_u32();
+        let sto_crc = (&block_metas_with_maxts_and_crc_bytes
+            [(block_metas_with_maxts_and_crc_size - 4) as usize..])
+            .get_u32();
         assert!(cal_crc == sto_crc);
         let meta = BlockMeta::decode_block_meta(
-            &block_metas_with_crc_bytes[..(block_metas_with_crc_size as usize - 4)],
+            &block_metas_with_maxts_and_crc_bytes
+                [..(block_metas_with_maxts_and_crc_size as usize - 4 - 8/* max_ts */)],
         );
+
+        let ts_st = block_metas_with_maxts_and_crc_size as usize - 4 - 8/* max_ts */;
+        let ts_ed = block_metas_with_maxts_and_crc_size as usize - 4;
+        let max_ts = (&block_metas_with_maxts_and_crc_bytes[ts_st..ts_ed]).get_u64();
 
         Ok(Self {
             file,
@@ -194,7 +195,7 @@ impl SsTable {
             last_key: meta[meta.len() - 1].last_key.clone(),
             block_meta: meta,
             bloom: Some(bloom_filter),
-            max_ts: 0,
+            max_ts,
         })
     }
 
@@ -249,7 +250,7 @@ impl SsTable {
             return Ok(None);
         }
 
-        let key = KeySlice::from_slice(&_key[..], TS_DEFAULT);
+        let key = KeySlice::from_slice(_key, TS_DEFAULT);
         let blk = self.read_block(self.find_block_idx(key))?;
         let ite = BlockIterator::create_and_seek_to_key(blk, key);
         if ite.key() == key {

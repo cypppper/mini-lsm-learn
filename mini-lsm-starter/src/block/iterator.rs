@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, sync::Arc};
 
 use crate::key::{KeySlice, KeyVec};
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::Buf;
 use nom::{combinator::rest, ExtendInto};
 use std::io::BufRead;
 

@@ -1,7 +1,6 @@
-use std::default;
 use std::io::BufRead;
 
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, BufMut};
 
 use crate::key::{KeySlice, KeyVec};
 
@@ -56,8 +55,7 @@ impl BlockBuilder {
             // first_key
             let external_sz: usize = 4 * 2 + raw_k.len() + value.len() + 8; // key_overlap_len, key_rest_len, value_len, offset len 4 * 2 || + timestamp(8)
             self.offsets.push(self.data.len() as u16);
-            let mut b: Vec<u8> = vec![];
-            b.reserve(external_sz - 2);
+            let mut b: Vec<u8> = Vec::with_capacity(external_sz - 2);
             b.put_u16(0);
             b.put_u16(raw_k.len() as u16);
             b.put_slice(raw_k);
@@ -81,8 +79,7 @@ impl BlockBuilder {
             return false;
         }
         self.offsets.push(self.data.len() as u16);
-        let mut b: Vec<u8> = vec![];
-        b.reserve(external_sz - 2);
+        let mut b: Vec<u8> = Vec::with_capacity(external_sz - 2);
         b.put_u16(overlap_len as u16);
         b.put_u16((key.key_len() - overlap_len) as u16);
         b.put_slice(&raw_k[overlap_len..key.key_len()]);

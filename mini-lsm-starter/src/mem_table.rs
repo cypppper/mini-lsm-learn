@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use nom::AsBytes;
 use ouroboros::self_referencing;
@@ -79,9 +79,9 @@ impl MemTable {
     }
 
     /// Create a memtable from WAL
-    pub fn recover_from_wal(_id: usize, _path: impl AsRef<Path>) -> Result<Self> {
+    pub fn recover_from_wal(_id: usize, _path: impl AsRef<Path>, max_ts: &mut u64) -> Result<Self> {
         let mut mt = Self::create(_id);
-        mt.wal = Some(Wal::recover(_path, &mt.map)?);
+        mt.wal = Some(Wal::recover(_path, &mt.map, max_ts)?);
         Ok(mt)
     }
 
@@ -217,7 +217,7 @@ impl StorageIterator for MemTableIterator {
     }
 
     fn key(&self) -> KeySlice {
-        Key::from_slice(&self.borrow_item().0.key_ref(), self.borrow_item().0.ts())
+        Key::from_slice(self.borrow_item().0.key_ref(), self.borrow_item().0.ts())
     }
 
     fn is_valid(&self) -> bool {

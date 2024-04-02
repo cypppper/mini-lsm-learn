@@ -50,7 +50,7 @@ impl Manifest {
             let mani_len = bytes_view.get_u16() as usize;
 
             let mani_json_bytes = &bytes_view[..mani_len];
-            let mut deser = serde_json::Deserializer::from_slice(&mani_json_bytes);
+            let mut deser = serde_json::Deserializer::from_slice(mani_json_bytes);
             let rcd = ManifestRecord::deserialize(&mut deser)?;
 
             let cal_crc = crc32fast::hash(mani_json_bytes);

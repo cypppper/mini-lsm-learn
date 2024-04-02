@@ -9,7 +9,6 @@ use bytes::Buf;
 use bytes::BufMut;
 use bytes::Bytes;
 pub use iterator::BlockIterator;
-use serde_json::from_slice;
 
 /// A block is the smallest unit of read and caching in LSM tree. It is a collection of sorted key-value pairs.
 pub struct Block {
