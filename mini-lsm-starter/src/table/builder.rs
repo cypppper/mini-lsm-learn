@@ -37,6 +37,12 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
+        // println!(
+        //     "add key{:?} ts{:?} , value {:?}",
+        //     key.key_ref(),
+        //     key.ts(),
+        //     value
+        // );
         self.max_ts = self.max_ts.max(key.ts());
         if !self.builder.add(key, value) {
             // full

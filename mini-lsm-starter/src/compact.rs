@@ -144,7 +144,7 @@ impl LsmStorageInner {
                     let upper_ite = SstConcatIterator::create_and_seek_to_first(concat_ssts_upper)?;
                     let mut ite = TwoMergeIterator::create(upper_ite, lower_ite)?;
 
-                    self.build_ssts_from_iter(&mut ite, task.is_lower_level_bottom_level, watermark)
+                    self.build_ssts_from_iter(&mut ite, _task.compact_to_bottom_level(), watermark)
                 } else {
                     let merge_ites = task
                         .upper_level_sst_ids
@@ -162,7 +162,7 @@ impl LsmStorageInner {
 
                     let mut ite = TwoMergeIterator::create(upper_ite, lower_ite)?;
 
-                    self.build_ssts_from_iter(&mut ite, task.is_lower_level_bottom_level, watermark)
+                    self.build_ssts_from_iter(&mut ite, _task.compact_to_bottom_level(), watermark)
                 }
             }
             CompactionTask::Tiered(task) => {
@@ -188,7 +188,11 @@ impl LsmStorageInner {
                 // let concat_ite = SstConcatIterator::create_and_seek_to_first(concat_ssts)?;
                 // let mut two_merge_ite = TwoMergeIterator::create(merge_ite, concat_ite)?;
 
-                self.build_ssts_from_iter(&mut merge_ite, false, watermark)
+                self.build_ssts_from_iter(
+                    &mut merge_ite,
+                    _task.compact_to_bottom_level(),
+                    watermark,
+                )
             }
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
@@ -213,7 +217,11 @@ impl LsmStorageInner {
                 let l1_iter = SstConcatIterator::create_and_seek_to_first(l1_tables)?;
                 let mut merge_two_iter = TwoMergeIterator::create(l0_merge_iter, l1_iter)?;
 
-                self.build_ssts_from_iter(&mut merge_two_iter, false, watermark)
+                self.build_ssts_from_iter(
+                    &mut merge_two_iter,
+                    _task.compact_to_bottom_level(),
+                    watermark,
+                )
             }
             CompactionTask::Simple(task) => {
                 let upper_tables = task
@@ -240,7 +248,11 @@ impl LsmStorageInner {
                     );
                     let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
                     let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_ssts_from_iter(&mut merge_two_iter, false, watermark)
+                    self.build_ssts_from_iter(
+                        &mut merge_two_iter,
+                        _task.compact_to_bottom_level(),
+                        watermark,
+                    )
                 } else {
                     let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_tables)?;
                     let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
@@ -259,7 +271,11 @@ impl LsmStorageInner {
                         );
                     }
                     let mut merge_two_iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.build_ssts_from_iter(&mut merge_two_iter, false, watermark)
+                    self.build_ssts_from_iter(
+                        &mut merge_two_iter,
+                        _task.compact_to_bottom_level(),
+                        watermark,
+                    )
                 }
             }
         }
@@ -440,7 +456,7 @@ impl LsmStorageInner {
 
                 if iter.key().ts() > watermark {
                     sst_builder.add(iter.key(), iter.value());
-                } else if !del_flag && !(iter.value().is_empty() && is_bottom) {
+                } else if !(del_flag || (iter.value().is_empty() && is_bottom)) {
                     sst_builder.add(iter.key(), iter.value());
                     del_flag = true;
                 } else {
@@ -448,6 +464,9 @@ impl LsmStorageInner {
                 }
 
                 iter.next()?;
+                if !iter.is_valid() {
+                    break;
+                }
             }
             del_flag = false;
             // while is_bottom && iter.is_valid() && iter.value().is_empty() {

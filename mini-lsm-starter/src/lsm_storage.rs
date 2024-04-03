@@ -255,7 +255,7 @@ impl MiniLsm {
 
 impl LsmStorageInner {
     pub fn mvcc(&self) -> &LsmMvccInner {
-        (&self.mvcc).as_ref().unwrap()
+        self.mvcc.as_ref().unwrap()
     }
     pub(crate) fn next_sst_id(&self) -> usize {
         self.next_sst_id
