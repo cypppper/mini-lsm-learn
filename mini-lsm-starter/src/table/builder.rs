@@ -91,19 +91,6 @@ impl SsTableBuilder {
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
         self.force_build_block();
-        if self.meta.is_empty() {
-            return Ok(SsTable {
-                file: FileObject::create(path.as_ref(), self.data)?,
-                block_meta: self.meta,
-                block_meta_offset: 0,
-                id,
-                block_cache,
-                first_key: KeyBytes::default(),
-                last_key: KeyBytes::default(),
-                bloom: None,
-                max_ts: 0,
-            });
-        }
 
         let meta_off: usize = self.data.len();
 

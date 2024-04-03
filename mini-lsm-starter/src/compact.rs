@@ -328,7 +328,7 @@ impl LsmStorageInner {
         for old_sst_id in l0_ssts.iter().chain(l1_ssts.iter()) {
             std::fs::remove_file(self.path_of_sst(*old_sst_id))?;
         }
-        self.sync_dir()?;
+        // self.sync_dir()?;
         Ok(())
     }
 

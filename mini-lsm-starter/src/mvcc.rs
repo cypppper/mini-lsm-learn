@@ -66,7 +66,11 @@ impl LsmMvccInner {
             inner,
             local_storage: Arc::new(SkipMap::<Bytes, Bytes>::new()),
             committed: Arc::new(false.into()),
-            key_hashes: None,
+            key_hashes: if serializable {
+                Some(Mutex::new((HashSet::<u32>::new(), HashSet::<u32>::new())))
+            } else {
+                None
+            },
         };
         Arc::new(txn)
     }

@@ -33,7 +33,7 @@ impl Wal {
     }
 
     pub fn path_of_wal(id: usize, _path: impl AsRef<Path>) -> PathBuf {
-        _path.as_ref().join(format!("{id}.wal"))
+        _path.as_ref().join(format!("{:05}.wal", id))
     }
 
     pub fn recover(

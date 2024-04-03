@@ -423,12 +423,8 @@ impl LsmStorageInner {
     ///     None: not exist
     ///     bytes.len == 0: deleted
     pub fn get(self: &Arc<Self>, _key: &[u8]) -> Result<Option<Bytes>> {
-        if let Some(mvcc) = &self.mvcc {
-            let txn = mvcc.new_txn(self.clone(), false);
-            txn.get(_key)
-        } else {
-            unreachable!()
-        }
+        let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+        txn.get(_key)
     }
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
@@ -519,14 +515,11 @@ impl LsmStorageInner {
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        let (_wr_mvcc, ts) = if self.mvcc.is_some() {
-            let ts = self.mvcc.as_ref().unwrap().latest_commit_ts() + 1;
-            // println!("write_batch get ts:{ts}");
-            (Some(self.mvcc.as_ref().unwrap().write_lock.lock()), ts)
-        } else {
-            (None, TS_DEFAULT)
-        };
+    pub fn write_batch_inner<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<u64> {
+        let (_wr_mvcc, ts) = (
+            Some(self.mvcc().write_lock.lock()),
+            self.mvcc().latest_commit_ts() + 1,
+        );
 
         for task in _batch {
             let size = match task {
@@ -551,21 +544,52 @@ impl LsmStorageInner {
             self.try_freeze(size)?;
         }
 
-        if self.mvcc.is_some() {
-            self.mvcc.as_ref().unwrap().update_commit_ts(ts);
-        }
+        self.mvcc().update_commit_ts(ts);
 
+        Ok(ts)
+    }
+
+    pub fn write_batch<T: AsRef<[u8]>>(
+        self: &Arc<Self>,
+        _batch: &[WriteBatchRecord<T>],
+    ) -> Result<()> {
+        if !self.options.serializable {
+            self.write_batch_inner(_batch)?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), true);
+            for rec in _batch {
+                match rec {
+                    WriteBatchRecord::Put(k, v) => txn.put(k.as_ref(), v.as_ref()),
+                    WriteBatchRecord::Del(k) => txn.delete(k.as_ref()),
+                }
+            }
+            txn.commit()?;
+        }
         Ok(())
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        self.write_batch(&[WriteBatchRecord::Put(_key, _value)])
+    pub fn put(self: &Arc<Self>, _key: &[u8], _value: &[u8]) -> Result<()> {
+        if !self.options.serializable {
+            self.write_batch_inner(&[WriteBatchRecord::Put(_key, _value)])?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), true);
+            txn.put(_key, _value);
+            txn.commit()?;
+        }
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        self.write_batch(&[WriteBatchRecord::Del(_key)])
+    pub fn delete(self: &Arc<Self>, _key: &[u8]) -> Result<()> {
+        if !self.options.serializable {
+            self.write_batch_inner(&[WriteBatchRecord::Del(_key)])?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), true);
+            txn.delete(_key);
+            txn.commit()?;
+        }
+        Ok(())
     }
 
     fn try_freeze(&self, size: usize) -> Result<()> {
@@ -675,17 +699,18 @@ impl LsmStorageInner {
             let man_record = ManifestRecord::Flush(sst_id);
             man.add_record(&_guard, man_record)?;
         }
+
+        if self.options.enable_wal {
+            std::fs::remove_file(self.path_of_wal(sst_id))?;
+        }
+
         Ok(())
     }
 
     pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
         // no-op
-        if let Some(mvcc) = &self.mvcc {
-            let txn = mvcc.new_txn(self.clone(), false);
-            Ok(txn)
-        } else {
-            unreachable!();
-        }
+        let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+        Ok(txn)
     }
 
     fn map_bound_sli_to_bound_keysli_lower(lower: Bound<&[u8]>) -> Bound<KeySlice> {
@@ -705,12 +730,8 @@ impl LsmStorageInner {
     }
 
     pub fn scan(self: &Arc<Self>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
-        if let Some(mvcc) = &self.mvcc {
-            let txn = mvcc.new_txn(self.clone(), false);
-            txn.scan(lower, upper)
-        } else {
-            unreachable!()
-        }
+        let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+        txn.scan(lower, upper)
     }
 
     pub fn scan_with_ts(
