@@ -1,6 +1,9 @@
 I (forked repository owner) finished mini-lsm W3D6 for now.
-thanks to great project & tutorial made by @skyzh!
 
+
+Thankssssssss to great project & tutorial made by @skyzh!
+
+--------------------------------------------------------------------------------------------------------
 
 
 ![banner](./mini-lsm-book/src/mini-lsm-logo.png)
