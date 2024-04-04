@@ -69,8 +69,8 @@ impl Wal {
 
         let mut file = self.file.lock();
         file.write_all(&buf)?;
-        file.flush()?;
-        file.get_mut().sync_all()?;
+        // file.flush()?;
+        // file.get_mut().sync_all()?;
         Ok(())
     }
 
